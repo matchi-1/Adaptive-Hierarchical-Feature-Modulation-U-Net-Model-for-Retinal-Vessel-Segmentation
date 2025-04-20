@@ -1,0 +1,7 @@
+tensorflow==2.13.0
+segmentation-models
+matplotlib
+imagecodecs
+opencv-python
+tensorflow-io
+Pillow

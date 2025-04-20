@@ -1,0 +1,13 @@
+# Install / downgrade python to ver 3.9
+
+# Create venv -- use py 3.9
+py -3.9 -m venv venv
+.\venv\Scripts\Activate
+
+pip install -r requirements.txt
+
+pip install ipykernel
+python -m ipykernel install --user --name=venv --display-name "Python (venv)"
+
+
+# in the jupyter kernel choose Python (venv)
