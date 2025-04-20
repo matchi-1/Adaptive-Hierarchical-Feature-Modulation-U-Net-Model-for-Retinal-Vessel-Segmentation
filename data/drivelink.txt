@@ -1,0 +1,2 @@
+Download the datasets here: https://drive.google.com/drive/folders/1yAncgJLuer7_6K2VLG1MZgb2ToxaSINr?usp=sharing
+Load the folders in the data folder.

@@ -1,0 +1,14 @@
+venv/
+myenv/
+.env/
+
+*.pyc
+*.pyo
+__pycache__/
+
+.ipynb_checkpoints/
+
+# dataset
+data/CHASEDB1
+data/DRIVE
+data/STARE
