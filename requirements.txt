@@ -1,7 +1,8 @@
-tensorflow==2.13.0
-segmentation-models
-matplotlib
-imagecodecs
 opencv-python
-tensorflow-io
-Pillow
+numpy>=1.22,<1.25
+typing-extensions>=4.10.0
+matplotlib
+torch
+torchvision
+pillow
+scikit-learn
