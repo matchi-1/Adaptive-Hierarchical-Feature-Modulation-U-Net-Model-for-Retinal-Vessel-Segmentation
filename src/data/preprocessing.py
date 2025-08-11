@@ -60,7 +60,7 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
         # 1. divides the image into tiles (8×8)
         # 2. equalizes histograms per tile
         # 3. clips to clipLimit to avoid noise amplification.
-    clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(16, 16))  # NOTE!!! i changed this to 16,16 from 8,8 -- might need to adjust in paper and compare in model later
     image_clahe = clahe.apply(image_gray.astype(np.uint8))  # `apply` expects 8-bit images ;  cast to uint8 (0–255).
 
 # Normalize to [0, 1] for gamma
@@ -69,7 +69,7 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
 # Step 3: Gamma correction
        # adjust_gamma applies out = in ** gamma
        # with gamma < 1 (e.g., 0.8), darker regions are brightened, which helps reveal faint vessels
-    image_gamma = exposure.adjust_gamma(image_clahe_norm, gamma=0.8)
+    image_gamma = exposure.adjust_gamma(image_clahe_norm, gamma=0.75) # NOTE!!! i also changed this from 8 to 0.75
 
 # Final output in model format: [C, H, W]
        # expand_dims(..., axis=0) makes the output shape (1, H, W) — a single-channel image ordered as (C, H, W) ; PyTorch convention.
