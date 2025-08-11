@@ -80,30 +80,44 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
 
 
 '''
-
+reads an RGB image from a given path, resizes it, normalizes pixel values to [0,1],
+and converts it to channel-first format (C, H, W) for deep learning models.
 '''
-
 def preprocess_image_rgb(image_path, resize=(512, 512)):
+# Load image from file (BGR format by default in OpenCV)
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Could not load image at {image_path}")
     
+# Resize image to the target dimensions
     image = cv2.resize(image, resize)
+    
+# Convert from BGR (OpenCV default) to RGB
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    image = np.transpose(image, (2, 0, 1))  # C, H, W
+    
+# Rearrange dimensions from (H, W, C) → (C, H, W)
+    image = np.transpose(image, (2, 0, 1))
+    
     return image
 
 
 '''
- loads a mask as grayscale, resizes, normalizes to [0,1], and returns shape (1, H, W).
+Loads a segmentation mask as grayscale, resizes it, normalizes pixel values to [0,1],
+and adds a channel dimension so the shape is (1, H, W).
 '''
-
 def preprocess_mask(mask_path, resize=(512, 512)):
+# Load mask as grayscale
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     if mask is None:
         raise FileNotFoundError(f"Could not load mask at {mask_path}")
     
+# Resize mask with nearest-neighbor interpolation (to preserve class labels)
     mask = cv2.resize(mask, resize, interpolation=cv2.INTER_NEAREST)
+    
+# Normalize pixel values to range [0,1]
     mask = mask.astype(np.float32) / 255.0
-    mask = np.expand_dims(mask, axis=0)  # C, H, W
+    
+# Add channel dimension (C=1)
+    mask = np.expand_dims(mask, axis=0)
+    
     return mask
