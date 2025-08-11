@@ -12,18 +12,18 @@ from skimage import exposure
 '''
 
 def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default size is 512x512 (will be used in the model params too)
-    # Load
+# Load
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Could not load image at {image_path}")
     
-    # Resize
+# Resize
     image = cv2.resize(image, resize)
 
-    # Convert BGR → RGB (most research papers and ML frameworks expect RGB)
+# Convert BGR → RGB (most research papers and ML frameworks expect RGB)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) # cast to float32 to keep precision for subsequent ops (avoid premature uint8 rounding); float32 avoids loss from integer arithmetic.
 
-    # Step 1: Weighted grayscale conversion
+# Step 1: Weighted grayscale conversion
     # computes Igray = 0.2793*R + 0.7041*G + 0.0166*B for every pixel (paper values).
     weights = np.array([0.2793, 0.7041, 0.0166], dtype=np.float32) 
     # tensordot = multiply the 3-channel image by the 3-element weight vector and sum over channels
@@ -47,11 +47,15 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
     '''    
 
 
-    # Step 2: CLAHE
+
+
+# Step 2: CLAHE
     '''
     Params:
-        > `clipLimit` controls how strongly local histograms are stretched. (SHOULD EXPERIMENT WITH THIS. NEEDS FINETUNING and backup y 5.0 value)
+        > `clipLimit` controls how strongly local histograms are stretched.
         > `tileGridSize` controls spatial granularity 
+
+        should fine tune values when training
     '''
         # 1. divides the image into tiles (8×8)
         # 2. equalizes histograms per tile
@@ -59,15 +63,15 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
     clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
     image_clahe = clahe.apply(image_gray.astype(np.uint8))  # `apply` expects 8-bit images ;  cast to uint8 (0–255).
 
-    # Normalize to [0, 1] for gamma
+# Normalize to [0, 1] for gamma
     image_clahe_norm = image_clahe / 255.0  # many gamma implementations assume normalized inputs ; doing gamma on 0–255 without normalization will give unexpected results
 
-    # Step 3: Gamma correction
+# Step 3: Gamma correction
        # adjust_gamma applies out = in ** gamma
        # with gamma < 1 (e.g., 0.8), darker regions are brightened, which helps reveal faint vessels
     image_gamma = exposure.adjust_gamma(image_clahe_norm, gamma=0.8)
 
-    # Final output in model format: [C, H, W]
+# Final output in model format: [C, H, W]
        # expand_dims(..., axis=0) makes the output shape (1, H, W) — a single-channel image ordered as (C, H, W) ; PyTorch convention.
        # astype(np.float32) ensures compat with model input
     image_out = np.expand_dims(image_gamma.astype(np.float32), axis=0)  # 1 channel
