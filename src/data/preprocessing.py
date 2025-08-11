@@ -27,7 +27,25 @@ def preprocess_image_clahe(image_path, resize=(512, 512)):  # for now, default s
     # computes Igray = 0.2793*R + 0.7041*G + 0.0166*B for every pixel (paper values).
     weights = np.array([0.2793, 0.7041, 0.0166], dtype=np.float32) 
     # tensordot = multiply the 3-channel image by the 3-element weight vector and sum over channels
+        # gray_pixel = R * w_R + G * w_G + B * w_B
     image_gray = np.tensordot(image_rgb, weights, axes=([2],[0]))  # resulting shape: (H, W)   ; 2D float array shape
+    '''
+    ex.
+    image_rgb = (H,W,3) 
+        [
+        [[100, 150, 200], [ 50,  80, 120]],
+        [[255, 255, 255], [  0,   0,   0]]
+        ]
+    weights = [0.3, 0.6, 0.1]
+
+
+    image_gray = (H,W)
+        [
+        [140.0, 77.0],
+        [255.0, 0.0]
+        ]
+    '''    
+
 
     # Step 2: CLAHE
     '''
