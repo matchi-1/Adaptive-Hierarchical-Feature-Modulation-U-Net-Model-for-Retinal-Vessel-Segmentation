@@ -1,7 +1,7 @@
 from torch.utils.data import Dataset, DataLoader
 import torch
 import os
-from .preprocessing import preprocess_image_clahe, preprocess_mask, preprocess_image_rgb
+from .preprocessing import preprocess_image_retina, preprocess_mask, preprocess_image_rgb
 
 class RetinalDataset(Dataset):
     def __init__(self, image_paths, mask_paths, use_clahe=True, transform=None):
@@ -17,7 +17,8 @@ class RetinalDataset(Dataset):
         image_path = self.image_paths[idx]
         mask_path = self.mask_paths[idx]
 
-        image = preprocess_image_clahe(image_path) if self.use_clahe else preprocess_image_rgb(image_path)
+        image = preprocess_image_retina(image_path) 
+        orig = preprocess_image_rgb(image_path)
         mask = preprocess_mask(mask_path)
 
         # Convert to HWC for albumentations
@@ -33,7 +34,7 @@ class RetinalDataset(Dataset):
             mask = torch.tensor(mask).unsqueeze(0).float()
         
 
-        return image, mask
+        return image, mask, orig
 
 def get_dataloader(image_paths, mask_paths, use_clahe=True, transform=None, batch_size=8, shuffle=True, num_workers=2):
     dataset = RetinalDataset(
