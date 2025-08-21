@@ -19,21 +19,31 @@ Notes:
     - Keeps content centered; padding is split on both sides.
 '''
 def _iso_resize_and_pad(img: np.ndarray, target: int = 512, pad_value: float = 0.0):
-    h, w = img.shape[:2]                                  # current height and width
-    scale = float(target) / max(h, w)                     # scale so the longer side becomes `target`
-    nh, nw = int(round(h * scale)), int(round(w * scale)) # new integer dimensions after scaling
-    interp = cv2.INTER_LINEAR if img.ndim == 3 else cv2.INTER_NEAREST  # choose interpolation based on channels
-    resized = cv2.resize(img, (nw, nh), interpolation=interp)          # isotropic resize
+    h, w = img.shape[:2]                                  # extract height and width ; discard channels
+    scale = float(target) / max(h, w)                     # compute a scaling factor so the longer side (either H or W) becomes exactly target
+    nh, nw = int(round(h * scale)), int(round(w * scale)) # apply the scale to height and width
 
-    top = (target - nh) // 2                              # symmetric vertical padding (top)
-    bottom = target - nh - top                            # symmetric vertical padding (bottom)
-    left = (target - nw) // 2                             # symmetric horizontal padding (left)
-    right = target - nw - left                            # symmetric horizontal padding (right)
+    # img.ndim == 3: 3 dimensions (H × W × C) color image (RGB/BGR) -- raw fundus images
+    # img.ndim == 2: 2  dimensions grayscale -- mask
+        # INTER_LINEAR (bilinear): blends neighboring pixels smoothly
+        # INTER_NEAREST: picks the closest pixel without blending
+    interp = cv2.INTER_LINEAR if img.ndim == 3 else cv2.INTER_NEAREST 
+    resized = cv2.resize(img, (nw, nh), interpolation=interp)          # isotropic resize based on new dimensions
+
+    # compute how much padding to add on each side:
+        # ex: if new size is 512×307, we need 205 columns of padding
+        # → Left = 102, Right = 103 (split symmetrically)
+
+    # ensures content stays centered
+    top = (target - nh) // 2                              # vertical padding (top)
+    bottom = target - nh - top                            # vertical padding (bottom)
+    left = (target - nw) // 2                             # horizontal padding (left)
+    right = target - nw - left                            # horizontal padding (right)
 
     if img.ndim == 3:
         # constant-color pad for 3-channel images
         padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
-                                    borderType=cv2.BORDER_CONSTANT, value=[pad_value]*3)
+                                    borderType=cv2.BORDER_CONSTANT, value=[pad_value]*3) # [pad_value]*3 expands to [0.0, 0.0, 0.0] to match channels
     else:
         # constant-value pad for single-channel images/masks
         padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
