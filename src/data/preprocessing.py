@@ -5,15 +5,14 @@ from skimage import exposure
 '''
 _iso_resize_and_pad
 Purpose:
-    Isotropic resize to fit the longer side to `target`, then zero-pad to a square canvas.
-Rationale:
-    Avoids aspect distortion that would bend thin vessels.
+    - Isotropic resize to fit the longer side to `target`, then zero-pad to a square canvas.
+    - Avoids aspect distortion that would bend thin vessels.
 Inputs:
-    img: HxW[xC] image (uint8/float32). 2D mask or 3-channel RGB/BGR.
-    target: output side length (pixels).
-    pad_value: constant value for padding (0 for images/masks).
+    - img: HxW[xC] image (uint8/float32). 2D mask or 3-channel RGB/BGR.
+    - target: output side length (pixels).
+    - pad_value: constant value for padding (0 for images/masks).
 Outputs:
-    Padded image of shape target x target [x C], same dtype as input.
+    - Padded image of shape target x target [x C], same dtype as input.
 Notes:
     - Uses bilinear for images (ndim==3) and nearest for masks (ndim==2).
     - Keeps content centered; padding is split on both sides.
@@ -68,10 +67,15 @@ Notes:
 '''
 
 def _estimate_fov_mask(rgb_float01: np.ndarray):
-    hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)  # convert to HSV on uint8
-    v = hsv[..., 2]                                          # value channel (brightness)
-    thr = np.clip(cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1], 0, 255)  # simple low threshold
-    thr = cv2.medianBlur(thr, 7)                             # remove salt-and-pepper noise
+    hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)  # convert RGB to HSV on uint8
+    v = hsv[..., 2]                                          # value channel (brightness) 0 = hue, 1 = saturation, 2 = value
+    thr = np.clip(cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1], 0, 255)  # create rough binary mask by a threshold of 10 in brightness
+    thr = cv2.medianBlur(thr, 7)                             # remove salt-and-pepper noise ; for each pixel, look at its 7×7 neighborhood, sort the 49 values, take the median
+    
+    # MORPH_CLOSE = dilation followed by erosion
+    # Structuring Element (SE): a 13×13 square (np.ones((13,13)))
+        # Dilation - a black pixel becomes white if any white pixel is under the SE when it’s centered there
+        # Erosion - a white pixel stays white only if the entire SE fits inside white
     thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((13,13), np.uint8))  # close small gaps
     return (thr > 0).astype(np.float32)                      # binary {0,1} mask
 
