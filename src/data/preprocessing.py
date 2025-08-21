@@ -66,7 +66,12 @@ Notes:
     This is a heuristic; precise FOVs can be obtained via circle detection if needed.
 '''
 
-def _estimate_fov_mask(rgb_float01: np.ndarray):
+def _estimate_fov_mask(rgb_float01: np.ndarray,
+                       dataset: str | None = None) -> np.ndarray:
+    
+    if dataset and dataset.upper() == "STARE":
+        return _estimate_fov_mask_stare(rgb_float01)
+    
     hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)  # convert RGB to HSV on uint8
     v = hsv[..., 2]                                          # value channel (brightness) 0 = hue, 1 = saturation, 2 = value
     thr = np.clip(cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1], 0, 255)  # create rough binary mask by a threshold of 10 in brightness
@@ -78,6 +83,119 @@ def _estimate_fov_mask(rgb_float01: np.ndarray):
         # Erosion - a white pixel stays white only if the entire SE fits inside white
     thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((13,13), np.uint8))  # close small gaps
     return (thr > 0).astype(np.float32)                      # binary {0,1} mask
+
+
+import cv2
+import numpy as np
+
+def _odd(n: int) -> int:
+    """Return the nearest odd integer >= 3 for kernel sizes."""
+    n = int(max(3, round(n)))
+    return n if n % 2 == 1 else n + 1
+
+def _keep_center_component(mask_u8: np.ndarray) -> np.ndarray:
+    """
+    Keep the connected component that contains the image center.
+    Fallback to the largest non-background component if the center is background.
+    mask_u8: HxW uint8 {0,255}
+    """
+    h, w = mask_u8.shape
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    if num <= 1:
+        return mask_u8
+    cx, cy = w // 2, h // 2
+    center_label = labels[cy, cx]
+    if center_label != 0:
+        keep = center_label
+    else:
+        # Largest component (exclude label 0 = background)
+        keep = int(np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1)
+    return (labels == keep).astype(np.uint8) * 255
+
+def _estimate_fov_mask_stare(rgb_float01: np.ndarray,
+                             border_frac: float = 0.08,
+                             v_gauss_sigma: float = 1.2,
+                             v_offset: float = 12.0,
+                             close_frac: float = 0.04,
+                             open_frac: float = 0.015) -> np.ndarray:
+    """
+    STARE-specific FOV:
+      1) Compute HSV V-channel.
+      2) Estimate background brightness from a border ring (green-ish, non-black).
+      3) Threshold V at (border_median + v_offset).
+      4) Clean with median/closing/opening.
+      5) Keep center-connected component only.
+    Returns float32 {0,1}.
+    """
+    # --- prep ---
+    img8 = (rgb_float01 * 255).astype(np.uint8)
+    h, w = img8.shape[:2]
+
+    # --- V channel with light smoothing to handle vignetting ---
+    hsv = cv2.cvtColor(img8, cv2.COLOR_RGB2HSV)
+    v = hsv[..., 2]
+    v_blur = cv2.GaussianBlur(v, (0, 0), v_gauss_sigma)
+
+    # --- border ring sampling to estimate background brightness (not pure black in STARE) ---
+    b = max(2, int(round(border_frac * min(h, w))))
+    border_samples = np.concatenate([
+        v_blur[:b, :].reshape(-1),
+        v_blur[h-b:, :].reshape(-1),
+        v_blur[:, :b].reshape(-1),
+        v_blur[:, w-b:].reshape(-1),
+    ], axis=0)
+
+    bg_med = float(np.median(border_samples))  # robust against bright labels
+    T = max(10.0, bg_med + v_offset)          # raise threshold above green border
+
+    # --- threshold V against adaptive border-informed cutoff ---
+    m = (v_blur > T).astype(np.uint8) * 255
+
+    # --- quick sanity fallback: if almost everything is white, tighten threshold ---
+    white_ratio = float(m.mean() / 255.0)
+    if white_ratio > 0.98:
+        # use a stricter cutoff based on 90th percentile of border to avoid full white mask
+        bg_p90 = float(np.percentile(border_samples, 90))
+        T2 = max(T, bg_p90 + v_offset)
+        m = (v_blur > T2).astype(np.uint8) * 255
+
+    # --- denoise + fill small gaps/holes ---
+    k_med = _odd(0.012 * min(h, w))     # ~1.2% of min side, odd
+    k_close = _odd(close_frac * min(h, w))
+    k_open  = _odd(open_frac  * min(h, w))
+
+    m = cv2.medianBlur(m, k_med)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((k_close, k_close), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  np.ones((k_open,  k_open),  np.uint8))
+
+    # --- keep center component only ---
+    m = _keep_center_component(m)
+
+    # --- final squeeze to {0,1} float32 ---
+    return (m > 0).astype(np.float32)
+
+def _estimate_fov_mask(rgb_float01: np.ndarray,
+                       dataset: str | None = None) -> np.ndarray:
+    """
+    Default FOV estimator.
+    - DRIVE/CHASE: original simple V>10 + median + closing.
+    - STARE: use border-informed thresholding to handle green/dark borders.
+    Returns float32 {0,1}.
+    """
+    if dataset and dataset.upper() == "STARE":
+        return _estimate_fov_mask_stare(rgb_float01)
+
+    # original fast path (DRIVE/CHASE)
+    hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)
+    v = hsv[..., 2]
+    thr = cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1]
+    thr = cv2.medianBlur(thr, 7)
+    thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((13,13), np.uint8))
+    return (thr > 0).astype(np.float32)
+
+
+
+
 
 
 '''
