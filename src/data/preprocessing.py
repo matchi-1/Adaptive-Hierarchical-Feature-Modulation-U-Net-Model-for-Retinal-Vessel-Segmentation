@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from skimage import exposure
+from pathlib import Path
 
 '''
 _iso_resize_and_pad
@@ -51,7 +52,7 @@ def _iso_resize_and_pad(img: np.ndarray, target: int = 512, pad_value: float = 0
 
 
 '''
-_estimate_fov_mask
+_estimate_fov_mask   -- used in generate_fov.py to generate FOV masks for CHASEDB1 dataset (DRIVE and STARE already have FOV masks available)
 Purpose:
     Fast, approximate field-of-view (FOV) mask for retinal fundus images.
 Method:
@@ -88,8 +89,8 @@ Purpose:
       2) Isotropic resize + pad to square canvas.
       3) Extract green channel (best vessel contrast).
       4) CLAHE to enhance local contrast (conservative params).
-      5) Optional mild gamma correction.
-      6) Optional FOV masking to zero out background outside the circular fundus.
+      5) Mild gamma correction.
+      6) FOV masking to zero out background outside the circular fundus.
       7) Return (1, H, W) float32 in [0,1].
 Inputs:
     path: image file path.
@@ -107,10 +108,15 @@ Contracts:
     - Background zeroed if apply_fov=True.
 '''
 
-def preprocess_image_retina(path: str, target_size: int = 512,
+def preprocess_image_retina(path: str,
+                            target_size: int = 512,                    # another good observable value: gamma=0.75, clahe_clip=3.5, clahe_tiles=4
                             use_gamma: bool = True, gamma: float = 0.9,
                             clahe_clip: float = 2.0, clahe_tiles: int = 8,
-                            apply_fov: bool = True) -> np.ndarray:
+                            apply_fov: bool = True,
+                            mask_path: str | None = None,
+                            auto_discover_mask: bool = True) -> np.ndarray:
+    
+
     bgr = cv2.imread(path, cv2.IMREAD_COLOR)               # load image as BGR uint8
     if bgr is None:
         raise FileNotFoundError(f"Could not load image at {path}")  # explicit failure if path is bad
@@ -120,17 +126,118 @@ def preprocess_image_retina(path: str, target_size: int = 512,
 
     g = rgb[..., 1]                                         # extract green channel (HxW float32 [0,1])
 
+
+    '''
+    How CLAHE works:
+        - Split the image into a grid of tiles of size (H/clahe_tiles)×(W/clahe_tiles)
+        - For each tile, compute its 256-bin histogram
+        - Clip each bin to a cap T derived from clipLimit to prevent rare bins from exploding contrast (noise amplification).
+        - Normalize the histogram so it sums to 1
+        - Interpolate between tiles to smooth the transitions
+    '''
+
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))  # CLAHE op
+
+    # why green channel: hemoglobin absorbs green → vessels have stronger contrast in G than R/B; dropping to one channel reduces noise and parameters.
     g_eq = clahe.apply((g * 255.0).astype(np.uint8)).astype(np.float32) / 255.0            # CLAHE on uint8 view
 
     if use_gamma and 0.5 <= gamma <= 1.2:                   # guardrails on gamma range
         g_eq = exposure.adjust_gamma(g_eq, gamma=gamma)     # mild gamma to lift faint vessels
 
+    # --- FOV gating: prefer existing mask; else estimator if allowed ---
     if apply_fov:
-        fov = _estimate_fov_mask(rgb)                       # compute approximate FOV mask
-        g_eq *= fov                                         # zero out background outside FOV
+        fov_mask = None
+
+        # discover mask path if not explicitly provided
+        cand = None
+        if mask_path is not None:
+            cand = Path(mask_path)
+        elif auto_discover_mask:
+            cand = _infer_mask_path(path)
+
+        if cand is not None and cand.exists():
+            # preprocess the existing mask to align geometry
+            fov_mask = preprocess_mask(str(cand), target_size=target_size)[0]  # (1,H,W)->(H,W)
+        else:
+            # fall back when no file exists
+            fov_mask = _estimate_fov_mask(rgb)
+
+        if fov_mask is not None:
+            g_eq *= fov_mask  # elementwise gating
 
     return np.expand_dims(g_eq.astype(np.float32), axis=0)  # (1,H,W) float32 in [0,1]
+
+'''
+preprocess_mask
+Purpose:
+    Load an existing FOV (or label) mask and align it to the model canvas.
+    - Accepts 0/255, 0/1, or arbitrary grayscale; thresholds to {0,1}.
+    - Geometry uses isotropic resize + pad (nearest) to avoid label bleed.
+    - Returns (1, H, W) float32 in {0.0, 1.0}.
+Inputs:
+    path: mask file path.
+    target_size: output side length (pixels).
+Outputs:
+    (1, target_size, target_size) float32 with values in {0.0, 1.0}.
+Notes:
+    - Nearest-neighbor is used for geometry to avoid label bleeding.
+    - Otsu ensures deterministic hard labels after resizing.
+'''
+
+def preprocess_mask(path: str, target_size: int = 512) -> np.ndarray:
+    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if m is None:
+        raise FileNotFoundError(f"Could not load mask at {path}")
+
+    # collapse to single channel if needed
+    if m.ndim == 3:
+        # handle palettized/color masks robustly
+        m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+
+    # ensure uint8 for stable thresholding
+    if m.dtype != np.uint8:
+        # normalize any numeric dtype into 0..255 range defensively
+        m = m.astype(np.float32)
+        # if already in {0,1}, scale up
+        if m.max() <= 1.0:
+            m = (m * 255.0)
+        # clip and cast
+        m = np.clip(m, 0, 255).astype(np.uint8)
+
+    # geometry: iso resize + pad (nearest inside helper due to 2D input)
+    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)
+
+    # binarize robustly:
+    # - if histogram is strongly bimodal, Otsu works
+    # - otherwise, any nonzero is treated as foreground
+    # try Otsu first
+    _, otsu = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    # fallback union in case of weird grayscale: nonzero wins
+    nz = (m > 0).astype(np.uint8) * 255
+    m_bin = cv2.bitwise_or(otsu, nz)
+
+    m_bin = (m_bin > 0).astype(np.float32)
+    return np.expand_dims(m_bin, axis=0).astype(np.float32)
+
+
+def _infer_mask_path(image_path: str | Path) -> Path:
+    """
+    Infer mask path from an image path by swapping 'images' -> 'mask' and forcing .png.
+    Works for DRIVE/CHASEDB1/STARE layouts like .../<split>/images/<name>.<ext>
+    """
+    p = Path(image_path)
+    parts = list(p.parts)
+    try:
+        i = parts.index("images")
+        parts[i] = "mask"
+    except ValueError:
+        # fallback: put mask alongside
+        return p.with_suffix(".png")
+    return Path(*parts).with_suffix(".png")
+
+
+
 
 '''
 preprocess_image_rgb
@@ -149,36 +256,7 @@ Outputs:
 def preprocess_image_rgb(path: str, target_size: int = 512) -> np.ndarray:
     bgr = cv2.imread(path, cv2.IMREAD_COLOR)               # load BGR
     if bgr is None:
-        raise FileNotFoundError(f"Could not load image at {path}")  # fail fast
+        raise FileNotFoundError(f"Could not load image at {path}")  
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # to RGB [0,1]
     rgb = _iso_resize_and_pad(rgb, target=target_size, pad_value=0.0)      # iso resize + pad
     return np.transpose(rgb, (2, 0, 1)).astype(np.float32)                  # HWC -> CHW float32
-
-'''
-preprocess_mask
-Purpose:
-    Prepare a binary segmentation mask aligned with the preprocessed images:
-      - Load mask (any format), convert to grayscale if needed.
-      - Isotropic resize + pad with nearest-neighbor.
-      - Otsu threshold to hard binary {0,1}.
-      - Return (1,H,W) float32.
-Inputs:
-    path: mask file path.
-    target_size: output side length (pixels).
-Outputs:
-    (1, target_size, target_size) float32 with values in {0.0, 1.0}.
-Notes:
-    - Nearest-neighbor is used for geometry to avoid label bleeding.
-    - Otsu ensures deterministic hard labels after resizing.
-'''
-
-def preprocess_mask(path: str, target_size: int = 512) -> np.ndarray:
-    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)             # load mask as-is (uint8 or palette)
-    if m is None:
-        raise FileNotFoundError(f"Could not load mask at {path}")  # fail fast
-    if m.ndim == 3:                                        # if mask is color/palette, convert to gray
-        m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)    # iso resize + pad (nearest)
-    m = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]    # hard threshold to {0,255}
-    m = (m > 0).astype(np.float32)                         # cast to {0.0, 1.0}
-    return np.expand_dims(m, axis=0).astype(np.float32)    # (1,H,W) float32
