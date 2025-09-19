@@ -9,36 +9,37 @@ Res2Net: A New Multi-scale Backbone Architecture. Gao et al. (2019, PAMI 2021)
 https://arxiv.org/abs/1904.01169
 
 Code reference:
-https://github.com/Res2Net/Res2Net-PretrainedModels/blob/master/res2net.py
+https://github.com/Res2Net/Res2Net-PretrainedModels/tree/master
 '''
 
 # ---------- Res2Net building block ----------
 """
-  Res2Net “bottle2neck” block (drop-in replacement for the 3×3 group inside a
-  standard bottleneck). It adds a *scale* dimension by splitting channels into
-  s “lanes,” chaining them, then concatenating and fusing, all inside one block.
+Purpose:
+    Res2Net “bottle2neck” block (drop-in replacement for the 3×3 group inside a
+    standard bottleneck). It adds a *scale* dimension by splitting channels into
+    s “lanes,” chaining them, then concatenating and fusing, all inside one block.
 
-  Args:
-      inplanes (int):   Input channels to the block.
-      planes (int):     Base channels of the stage (final output has planes*expansion).
-      stride (int):     Stride used by the 3×3 branches (downsampling when >1).
-      downsample:       Optional projection for the residual path when shape/stride changes.
-      baseWidth (int):  Channels per split at reference width 64 (w in the paper).
-                        The 1×1 “reduce” produces channel = s * floor(planes * (w/64)).
-      scale (int):      Number of splits (s). Larger s → richer multi-scale mix.
-      stype (str):      'normal' for intra-stage blocks, 'stage' for the first block of a stage
-                        (uses pooled last split to keep shapes aligned when downsampling).
+Parameters:
+    inplanes (int):     Input channels to the block.
+    planes (int):       Base channels of the stage (final output has planes*expansion).
+    stride (int):       Conv stride. Default: 1.
+    downsample:         Optional projection for the residual path when shape/stride changes.
+    baseWidth (int):    Channels per split at reference width 64 (w in the paper).
+                            The 1×1 “reduce” produces channel = s * floor(planes * (w/64)).
+    scale (int):        Number of splits (s). Larger s → richer multi-scale mix.
+    stype (str):        'normal' for intra-stage blocks, 'stage' for the first block of a stage
+                            (uses pooled last split to keep shapes aligned when downsampling).
 
-  Shapes (typical bottleneck stage):
-      Input:   [B, inplanes, H,   W]
-      Output:  [B, planes*4, H/Δ, W/Δ]   where Δ = stride for the first block in a stage.
+Shapes (typical bottleneck stage):
+    Input:   [B, inplanes, H,   W]
+    Output:  [B, planes*4, H/Δ, W/Δ]   where Δ = stride for the first block in a stage.
 
-  Implementation notes:
-    • conv1 produces width*scale channels so we can split evenly into s lanes.
-    • We build (scale−1) 3×3 branches; x1 bypasses its 3×3 to reduce params. 
-    • In a “stage” (downsampling) block, each branch uses the stride; we pool the
-      last split before concatenation to keep spatial sizes consistent.
-  """
+Notes:
+    - conv1 produces width*scale channels so we can split evenly into s lanes.
+    - We build (scale−1) 3×3 branches; x1 bypasses its 3×3 to reduce params. 
+    - In a “stage” (downsampling) block, each branch uses the stride; we pool the
+    last split before concatenation to keep spatial sizes consistent.
+"""
 class Bottle2neck(nn.Module):
    
     expansion = 4
@@ -100,7 +101,7 @@ class Bottle2neck(nn.Module):
              - Add the identity (downsampled if needed) and apply ReLU. The paper positions
                this module as a drop-in for the 3×3 group inside bottlenecks. 
 
-        Returns:
+        Ouput:
             Tensor of shape [B, planes*expansion, H/Δ, W/Δ]
         """
         residual = x
@@ -138,26 +139,26 @@ class Bottle2neck(nn.Module):
         out = self.relu(out + residual)
         return out
 
-    """
+"""
+Purpose:
     Res2Net backbone (ResNet-50 scaffold with [3,4,6,3] blocks), where each
     bottleneck’s 3×3 group is replaced by the Res2Net bottle2neck module.
 
-    Paper context:
-      • Res2Net replaces the group of 3×3 filters in a bottleneck with smaller
-        groups connected hierarchically inside the block—stronger multi-scale
-        ability at similar compute. 
-      • The scale dimension is orthogonal to width/cardinality, so it integrates
-        with modules like SE and with other backbones (ResNeXt/DLA/etc.).
-      • Multi-scale representations benefit detection/segmentation and other
-        dense tasks; this backbone is commonly used as an encoder there. 
+Parameters:
+    block (class):      Block class to use (Bottle2neck).
+    layers (int list):  List of block counts per stage (e.g., [3,4,6,3] for 50 = (3+4+6+3)*3 + 2).
+    baseWidth (int):    w in paper; channels per split at reference width 64.
+    scale (int):        s in paper; number of splits (control parameter).
+    num_classes (int):  Classifier head output dim (for ImageNet-style usage).
 
-    Args:
-        block:      Block class to use (Bottle2neck).
-        layers:     List of block counts per stage (e.g., [3,4,6,3] for “50”).
-        baseWidth:  w in paper; channels per split at reference width 64.
-        scale:      s in paper; number of splits (control parameter).
-        num_classes:Classifier head output dim (for ImageNet-style usage).
-    """
+Notes:
+    - Res2Net replaces the group of 3×3 filters in a bottleneck with smaller
+    groups connected hierarchically inside the block—stronger multi-scale
+    ability at similar compute. 
+    - The scale dimension is orthogonal(separate) to width/cardinality, so it integrates
+    with modules like SE and with other backbones (ResNeXt/DLA/etc.)
+
+"""
 class Res2Net(nn.Module):
     def __init__(self, block, layers, baseWidth=26, scale=4, num_classes=1000):
         self.inplanes = 64
@@ -191,17 +192,46 @@ class Res2Net(nn.Module):
 
     def _make_layer(self, block, planes, blocks, stride=1):
         """
-        Build one ResNet stage of `blocks` Bottle2neck modules.
+        Purpose: 
+            Build one ResNet stage of `blocks` Bottle2neck modules.
+        Parameters:
+            block (Type[nn.Module]):    The residual block class to instantiate (e.g., `Bottle2neck`).
+                                        Must accept the signature:
+                                        `block(inplanes, planes, stride=..., downsample=..., stype=..., baseWidth=..., scale=...)`
+                                        and define a class attribute `expansion` (e.g., 4 for bottleneck).
+            planes (int):               The base channel width *inside* the stage's blocks. 
+                                        The block's output channel count will be `planes * block.expansion`.
+            blocks (int):               Number of residual blocks to stack in this stage.
+            stride (int, default=1):    Spatial stride applied by the *first* block of the stage. Use 2 to
+                                        downsample H and W by 2× at the stage entrance; later blocks use stride=1.
+                
+   
+        Inputs (when the returned module is called later during forward):
+            x: Tensor of shape
+                [B, C_in=self.inplanes, H, W]
 
-        The first block in a stage:
-          • uses `stride`>1 to downsample spatially,
-          • passes `stype='stage'` to keep shapes aligned inside the block,
-          • applies a residual projection (1×1) when shape/stride changes.
+        Outputs:
+            y: Tensor of shape
+                [B, C_out=planes * block.expansion, H_out, W_out]
+            where:
+                H_out = H // stride   (integer division; equal to H if stride==1)
+                W_out = W // stride
 
-        Later blocks in the same stage use `stype='normal'` and stride=1.
+        Notes:
+            - The first block in a stage:
+                - uses `stride`>1 to downsample spatially,
+                - passes `stype='stage'` to keep shapes aligned inside the block,
+                - applies a residual projection (1×1) when shape/stride changes.
 
-        This preserves the classic ResNet scaffold while swapping in the
-        within-block multi-scale module described by Res2Net.
+            - Later blocks in the same stage use `stype='normal'` and stride=1.
+
+            - Updates `self.inplanes` to `planes * block.expansion` so the next stage
+                knows its expected input channel count.
+
+        Returns:
+            nn.Sequential:
+                A sequential container of `blocks` residual modules forming this stage.
+
         """
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
@@ -211,9 +241,12 @@ class Res2Net(nn.Module):
             )
 
         layers = []
+        # First block of the stage: may downsample (based on stride); marked as 'stage' for shape-safe internals.
         layers.append(block(self.inplanes, planes, stride, downsample=downsample,
                             stype='stage', baseWidth=self.baseWidth, scale=self.scale))
         self.inplanes = planes * block.expansion
+
+        # Remaining blocks (no further spatial downsampling inside this stage)
         for _ in range(1, blocks):
             layers.append(block(self.inplanes, planes, baseWidth=self.baseWidth, scale=self.scale))
 
@@ -221,12 +254,37 @@ class Res2Net(nn.Module):
 
     def forward(self, x):
         """
-        Standard ResNet forward for classification:
-            Stem → Stage1..4 → GAP → FC.
+        Purpose:
+            Forward pass (classification mode).
 
-        For U-Net/segmentation:
-            You would *tap* the outputs after stem/layer1..4 (C1..C5) and
-            feed them to a decoder instead of (or in addition to) the FC head.
+        Pipeline:
+            conv1 → BN → ReLU → maxpool → layer1 → layer2 → layer3 → layer4 → GAP → FC
+
+        Parameters:
+            x (torch.Tensor): Input tensor of shape (B, C_in, H, W).
+
+        Returns:
+            torch.Tensor: Class logits of shape (B, num_classes).
+
+        Shape notes (default ResNet/Res2Net strides):
+            After conv1:      ~ (B, 64,   H/2,  W/2)
+            After maxpool:    ~ (B, 64,   H/4,  W/4)
+            After layer1/C2:  ~ (B, 256,  H/4,  W/4)
+            After layer2/C3:  ~ (B, 512,  H/8,  W/8)
+            After layer3/C4:  ~ (B, 1024, H/16, W/16)
+            After layer4/C5:  ~ (B, 2048, H/32, W/32)
+            After GAP:        ~ (B, 2048)
+            Logits:           ~ (B, num_classes)
+
+        Notes:
+            - For segmentation, tap C1..C5 before GAP/FC and feed them to a decoder.
+            Typical taps:
+                C1 = ReLU(BN(conv1(x)))                # ~ H/2,  64ch
+                x  = maxpool(C1)                       # ~ H/4
+                C2 = layer1(x); C3 = layer2(C2)        # ~ H/4, H/8
+                C4 = layer3(C3); C5 = layer4(C4)       # ~ H/16, H/32
+                
+            - If you change stage strides/dilations (e.g., OS=16), the spatial scales shift accordingly.
         """
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
@@ -240,15 +298,3 @@ class Res2Net(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
-
-
-#def res2net50_26w_4s(pretrained=False, **kwargs):
-#    """Constructs a Res2Net-50_26w_4s model.
-#    Args:
-#        pretrained (bool): If True, returns a model pre-trained on ImageNet
-#    """
-#    model = Res2Net(Bottle2neck, [3, 4, 6, 3], baseWidth = 26, scale = 4, **kwargs)
-#    if pretrained:
-#        model.load_state_dict(model_zoo.load_url(model_urls['res2net50_26w_4s']))
-#    return model
-# 'res2net50_26w_4s': 'https://shanghuagao.oss-cn-beijing.aliyuncs.com/res2net/res2net50_26w_4s-06e79181.pth',

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MSU(nn.Module):
-    r"""
+    """
     Multi-scale Subtraction Unit (MSU)
 
     Purpose:
@@ -14,15 +14,11 @@ class MSU(nn.Module):
         and boundaries.
 
     Parameters:
-        in_channels : int
-            Number of channels in each input feature map.
-        out_channels : int, optional (default: in_channels)
-            Number of channels produced by each scale’s convolution and by the final
-            sum. If different from `in_channels`, each scale projects to this size.
-        use_bn : bool, optional (default: True)
-            If True, applies BatchNorm2d to the fused output.
-        activation : bool, optional (default: True)
-            If True, applies ReLU to the normalized output.
+        in_channels (int):  Number of channels in each input feature map.
+        out_channels (int): Number of channels produced by each scale’s convolution and by the final
+                            sum. If different from `in_channels`, each scale projects to this size.
+        use_bn (bool):      If True, applies BatchNorm2d to the fused output.
+        activation (bool):  If True, applies ReLU to the normalized output.
 
     Inputs:
         F_A : torch.Tensor
