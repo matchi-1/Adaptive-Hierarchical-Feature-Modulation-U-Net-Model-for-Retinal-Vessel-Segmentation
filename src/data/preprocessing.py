@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from skimage import exposure
 from pathlib import Path
+from src.data.mask_path_util import _infer_mask_path
 
 '''
 _iso_resize_and_pad
@@ -147,13 +148,11 @@ def preprocess_image_retina(path: str,
     # --- FOV gating: prefer existing mask; else estimator if allowed ---
     if apply_fov:
         fov_mask = None
-
-        # discover mask path if not explicitly provided
-        cand = None
+        cand: Path | None = None
         if mask_path is not None:
             cand = Path(mask_path)
         elif auto_discover_mask:
-            cand = _infer_mask_path(path)
+            cand = _infer_mask_path(path)  # now only searches mask/ folder
 
         if cand is not None and cand.exists():
             # preprocess the existing mask to align geometry
@@ -167,13 +166,15 @@ def preprocess_image_retina(path: str,
 
     return np.expand_dims(g_eq.astype(np.float32), axis=0)  # (1,H,W) float32 in [0,1]
 
+
 '''
 preprocess_mask
 Purpose:
-    Load an existing FOV (or label) mask and align it to the model canvas.
-    - Accepts 0/255, 0/1, or arbitrary grayscale; thresholds to {0,1}.
-    - Geometry uses isotropic resize + pad (nearest) to avoid label bleed.
-    - Returns (1, H, W) float32 in {0.0, 1.0}.
+    Prepare a binary segmentation mask aligned with the preprocessed images:
+      - Load mask (any format), convert to grayscale if needed.
+      - Isotropic resize + pad with nearest-neighbor.
+      - Otsu threshold to hard binary {0,1}.
+      - Return (1,H,W) float32.
 Inputs:
     path: mask file path.
     target_size: output side length (pixels).
@@ -185,58 +186,15 @@ Notes:
 '''
 
 def preprocess_mask(path: str, target_size: int = 512) -> np.ndarray:
-    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)             # load mask as-is (uint8 or palette)
     if m is None:
-        raise FileNotFoundError(f"Could not load mask at {path}")
-
-    # collapse to single channel if needed
-    if m.ndim == 3:
-        # handle palettized/color masks robustly
+        raise FileNotFoundError(f"Could not load mask at {path}")  # fail fast
+    if m.ndim == 3:                                        # if mask is color/palette, convert to gray
         m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-
-    # ensure uint8 for stable thresholding
-    if m.dtype != np.uint8:
-        # normalize any numeric dtype into 0..255 range defensively
-        m = m.astype(np.float32)
-        # if already in {0,1}, scale up
-        if m.max() <= 1.0:
-            m = (m * 255.0)
-        # clip and cast
-        m = np.clip(m, 0, 255).astype(np.uint8)
-
-    # geometry: iso resize + pad (nearest inside helper due to 2D input)
-    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)
-
-    # binarize robustly:
-    # - if histogram is strongly bimodal, Otsu works
-    # - otherwise, any nonzero is treated as foreground
-    # try Otsu first
-    _, otsu = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-
-    # fallback union in case of weird grayscale: nonzero wins
-    nz = (m > 0).astype(np.uint8) * 255
-    m_bin = cv2.bitwise_or(otsu, nz)
-
-    m_bin = (m_bin > 0).astype(np.float32)
-    return np.expand_dims(m_bin, axis=0).astype(np.float32)
-
-
-def _infer_mask_path(image_path: str | Path) -> Path:
-    """
-    Infer mask path from an image path by swapping 'images' -> 'mask' and forcing .png.
-    Works for DRIVE/CHASEDB1/STARE layouts like .../<split>/images/<name>.<ext>
-    """
-    p = Path(image_path)
-    parts = list(p.parts)
-    try:
-        i = parts.index("images")
-        parts[i] = "mask"
-    except ValueError:
-        # fallback: put mask alongside
-        return p.with_suffix(".png")
-    return Path(*parts).with_suffix(".png")
-
-
+    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)    # iso resize + pad (nearest)
+    m = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]    # hard threshold to {0,255}
+    m = (m > 0).astype(np.float32)                         # cast to {0.0, 1.0}
+    return np.expand_dims(m, axis=0).astype(np.float32)    # (1,H,W) float32
 
 
 '''
