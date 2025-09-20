@@ -1,8 +1,9 @@
 # src/data/generate_fov.py
 # Generate FOV masks for CHASEDB1. Writes 0/255 PNGs into .../mask.
+# all FOV masks has already been created, no need to run this again
 
 import sys
-from pathlib import Path
+from pathlib import Paths
 import cv2
 import numpy as np
 
@@ -33,7 +34,7 @@ def _estimate_fov_compat(rgb01: np.ndarray) -> np.ndarray:
     try:
         return _estimate_fov_mask(rgb01, dataset="CHASE")
     except TypeError:
-        # Older signature: _estimate_fov_mask(rgb01)
+        # older signature: _estimate_fov_mask(rgb01)
         return _estimate_fov_mask(rgb01)
 
 def generate_masks_for_split(images_dir: Path, masks_dir: Path):
