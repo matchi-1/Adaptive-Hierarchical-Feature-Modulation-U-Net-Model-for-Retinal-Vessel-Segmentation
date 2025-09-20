@@ -218,3 +218,4 @@ def preprocess_image_rgb(path: str, target_size: int = 512) -> np.ndarray:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # to RGB [0,1]
     rgb = _iso_resize_and_pad(rgb, target=target_size, pad_value=0.0)      # iso resize + pad
     return np.transpose(rgb, (2, 0, 1)).astype(np.float32)                  # HWC -> CHW float32
+
