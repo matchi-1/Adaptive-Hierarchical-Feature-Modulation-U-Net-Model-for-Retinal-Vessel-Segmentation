@@ -30,13 +30,16 @@ def get_train_augs(size: int = 512):  # by default, expects images resized to 51
     return A.Compose([  # albumentations’ way to bundle a list of transforms into one pipeline
         
         # --- light, vessel-safe geometry (applied jointly to image & mask) ---
-        A.ShiftScaleRotate(
-            shift_limit=0.03,      # can shift left/right/up/down by up to 3% of width/height
-            scale_limit=0.05,      # can zoom in/out by up to 5%
-            rotate_limit=15,       # can rotate between –15° and +15°
-            border_mode=0,         # fills areas outside the FOV with black (instead of weird reflections)
-            p=0.75                 # applies this transform 75% of the time
+        A.Affine(
+            scale=(0.95, 1.05),                                      # can zoom in/out by up to ~5%
+            translate_percent={"x": (-0.03, 0.03), "y": (-0.03, 0.03)},  # can shift left/right/up/down by up to 3% of width/height
+            rotate=(-15, 15),                                        # can rotate between –15° and +15°
+            shear={"x": (0, 0), "y": (0, 0)},                        # no shear to avoid bending vessels
+            mode="constant",                                         # fills areas outside the FOV with cval
+            cval=0,                                                  # fill value = 0 (black) to match FOV background
+            p=0.75                                                   # applies this transform 75% of the time
         ),
+
         A.HorizontalFlip(p=0.50), # flip left<->right 50% of the time
         A.VerticalFlip(p=0.20),   # flip top<->bottom 20% of the time
 
@@ -47,11 +50,18 @@ def get_train_augs(size: int = 512):  # by default, expects images resized to 51
             p=0.40                   # applied 40% of the time
         ),
 
+        # # noise/Blur: use one at a time (small, realistic)
+        # A.OneOf([  # pick one of the listed transforms (or none, 75% of the time)
+        #     A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.05, 0.15)),    # adds sensor-like noise (stable across albumentations versions)
+        #     A.MultiplicativeNoise(multiplier=(0.95, 1.05), per_channel=False),  # multiplies pixel values by ~0.95–1.05, simulating uneven illumination
+        # ], p=0.25),  # applies one of these noise types 25% of the time
+
         # noise/Blur: use one at a time (small, realistic)
-        A.OneOf([ # pick one of the listed transforms (or none, 75% of the time)
-            A.GaussNoise(var_limit=(5.0, 15.0)),    # adds Gaussian sensor noise, variance between 5–15
-            A.MultiplicativeNoise(multiplier=(0.95, 1.05), per_channel=False), # multiplies pixel values by ~0.95–1.05, simulating uneven illumination
-        ], p=0.25), # applies one of these noise types 25% of the time
+        A.OneOf([  # pick one of the listed transforms (or none, 75% of the time)
+            A.MultiplicativeNoise(multiplier=(0.95, 1.05), per_channel=False),  # multiplies pixel values by ~0.95–1.05, simulating uneven illumination
+        ], p=0.25),  # applies one of these noise types 25% of the time
+
+
 
         A.OneOf([
             A.GaussianBlur(blur_limit=(3, 5)),      # simulates slight out-of-focus or denoising (kernel size 3–5)
