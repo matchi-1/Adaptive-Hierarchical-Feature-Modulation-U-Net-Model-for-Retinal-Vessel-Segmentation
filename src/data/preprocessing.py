@@ -52,20 +52,27 @@ def _iso_resize_and_pad(img: np.ndarray, target: int = 512, pad_value: float = 0
 
 
 
-"""
-Map image path to FOV mask path using your dataset's naming/layout rules:
-    images/01_training.jpg -> mask/01_training_mask.png
-    images/01_test.jpg     -> mask/01_test_mask.png
-Works for DRIVE/CHASEDB1/STARE with the same structure.
-"""
-
+'''
+derive_fov_mask_path_from_image
+Purpose:
+    - Construct the corresponding FOV mask file path from a given image path.
+    - Follows the dataset’s naming/layout convention across DRIVE, CHASEDB1, and STARE.
+Inputs:
+    - image_path: str. Full path to an image file inside the `images/` folder.
+Outputs:
+    - str. Full path to the corresponding mask file inside the `mask/` folder.
+Notes:
+    - Rule: images/01_training.jpg -> mask/01_training_mask.png
+    - Rule: images/01_test.jpg     -> mask/01_test_mask.png
+    - Works uniformly for DRIVE, CHASEDB1, and STARE datasets after renaming
+'''
 def derive_fov_mask_path_from_image(image_path: str) -> str:
-
-    p = Path(image_path)
-    mask_dir = p.parent.parent / "mask"     # swap 'images' -> 'mask'
-    stem = p.stem                            # e.g., "01_training" or "02_test"
-    mask_name = f"{stem}_mask.png"           # append "_mask", force .png
-    return str(mask_dir / mask_name)
+    p = Path(image_path)                    # convert to Path object
+    # replace 'images' directory with 'mask'. / "mask" appends a child folder named "mask" to that directory, yielding .../training/mask
+    mask_dir = p.parent.parent / "mask"     # p.parent is the directory containing the file. ".parent.parent" moves it from /training/images to /training
+    stem = p.stem                            # p.stem is the file name without its extension.e.g., "01_training" or "02_test"
+    mask_name = f"{stem}_mask.png"           # append "_mask", force extension .png
+    return str(mask_dir / mask_name)         # joins the mask_dir from step 2 with the mask_name from step 4 to form the full mask path
 
 
 
