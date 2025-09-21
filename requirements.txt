@@ -6,3 +6,4 @@ torch
 torchvision
 pillow
 scikit-learn
+albumentations
