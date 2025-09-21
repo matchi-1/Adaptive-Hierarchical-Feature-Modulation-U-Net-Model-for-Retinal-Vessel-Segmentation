@@ -1,7 +1,42 @@
+# old code, is not in us anymore but keep as reference
+
 import re
 from pathlib import Path
+import numpy as np
+import cv2
 
 _IMG_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff", ".bmp"]
+
+
+'''
+_estimate_fov_mask   -- used in generate_fov.py to generate FOV masks for CHASEDB1 dataset (DRIVE and STARE already have FOV masks available)
+Purpose:
+    Fast, approximate field-of-view (FOV) mask for retinal fundus images.
+Method:
+    - Convert RGB [0,1] to HSV.
+    - Threshold the value channel to separate circular FOV from black borders.
+    - Median blur and morphological close to fill small holes/gaps.
+Inputs:
+    rgb_float01: HxWx3 float32 RGB in [0,1].
+Outputs:
+    HxW float32 mask in {0.0, 1.0}.
+Notes:
+    This is a heuristic; precise FOVs can be obtained via circle detection if needed.
+'''
+
+def _estimate_fov_mask(rgb_float01: np.ndarray):
+    hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)  # convert RGB to HSV on uint8
+    v = hsv[..., 2]                                          # value channel (brightness) 0 = hue, 1 = saturation, 2 = value
+    thr = np.clip(cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1], 0, 255)  # create rough binary mask by a threshold of 10 in brightness
+    thr = cv2.medianBlur(thr, 7)                             # remove salt-and-pepper noise ; for each pixel, look at its 7×7 neighborhood, sort the 49 values, take the median
+    
+    # MORPH_CLOSE = dilation followed by erosion
+    # Structuring Element (SE): a 13×13 square (np.ones((13,13)))
+        # Dilation - a black pixel becomes white if any white pixel is under the SE when it’s centered there
+        # Erosion - a white pixel stays white only if the entire SE fits inside white
+    thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((13,13), np.uint8))  # close small gaps
+    return (thr > 0).astype(np.float32)                      # binary {0,1} mask
+
 
 def _dataset_name_from_path(p: Path) -> str | None:
     up = str(p).upper()

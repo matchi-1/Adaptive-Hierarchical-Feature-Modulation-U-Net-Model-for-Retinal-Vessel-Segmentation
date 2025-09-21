@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 from skimage import exposure
 from pathlib import Path
-from src.data.mask_path_util import _infer_mask_path
 
 '''
 _iso_resize_and_pad
@@ -52,34 +51,22 @@ def _iso_resize_and_pad(img: np.ndarray, target: int = 512, pad_value: float = 0
     return padded
 
 
-'''
-_estimate_fov_mask   -- used in generate_fov.py to generate FOV masks for CHASEDB1 dataset (DRIVE and STARE already have FOV masks available)
-Purpose:
-    Fast, approximate field-of-view (FOV) mask for retinal fundus images.
-Method:
-    - Convert RGB [0,1] to HSV.
-    - Threshold the value channel to separate circular FOV from black borders.
-    - Median blur and morphological close to fill small holes/gaps.
-Inputs:
-    rgb_float01: HxWx3 float32 RGB in [0,1].
-Outputs:
-    HxW float32 mask in {0.0, 1.0}.
-Notes:
-    This is a heuristic; precise FOVs can be obtained via circle detection if needed.
-'''
 
-def _estimate_fov_mask(rgb_float01: np.ndarray):
-    hsv = cv2.cvtColor((rgb_float01 * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)  # convert RGB to HSV on uint8
-    v = hsv[..., 2]                                          # value channel (brightness) 0 = hue, 1 = saturation, 2 = value
-    thr = np.clip(cv2.threshold(v, 10, 255, cv2.THRESH_BINARY)[1], 0, 255)  # create rough binary mask by a threshold of 10 in brightness
-    thr = cv2.medianBlur(thr, 7)                             # remove salt-and-pepper noise ; for each pixel, look at its 7×7 neighborhood, sort the 49 values, take the median
-    
-    # MORPH_CLOSE = dilation followed by erosion
-    # Structuring Element (SE): a 13×13 square (np.ones((13,13)))
-        # Dilation - a black pixel becomes white if any white pixel is under the SE when it’s centered there
-        # Erosion - a white pixel stays white only if the entire SE fits inside white
-    thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((13,13), np.uint8))  # close small gaps
-    return (thr > 0).astype(np.float32)                      # binary {0,1} mask
+"""
+Map image path to FOV mask path using your dataset's naming/layout rules:
+    images/01_training.jpg -> mask/01_training_mask.png
+    images/01_test.jpg     -> mask/01_test_mask.png
+Works for DRIVE/CHASEDB1/STARE with the same structure.
+"""
+
+def derive_fov_mask_path_from_image(image_path: str) -> str:
+
+    p = Path(image_path)
+    mask_dir = p.parent.parent / "mask"     # swap 'images' -> 'mask'
+    stem = p.stem                            # e.g., "01_training" or "02_test"
+    mask_name = f"{stem}_mask.png"           # append "_mask", force .png
+    return str(mask_dir / mask_name)
+
 
 
 '''
@@ -149,22 +136,25 @@ def preprocess_image_retina(path: str,
     if apply_fov:
         fov_mask = None
         cand: Path | None = None
-        if mask_path is not None:
-            cand = Path(mask_path)
-        elif auto_discover_mask:
-            cand = _infer_mask_path(path)  # now only searches mask/ folder
 
-        if cand is not None and cand.exists():
-            # preprocess the existing mask to align geometry
-            fov_mask = preprocess_mask(str(cand), target_size=target_size)[0]  # (1,H,W)->(H,W)
-        else:
-            # fall back when no file exists
-            fov_mask = _estimate_fov_mask(rgb)
+        # *** STRICT MODE: FOV mask must be provided and must exist. ***
+        if mask_path is None:
+            raise ValueError(
+                "FOV mask_path is required but was not provided. "
+            )
+        cand = Path(mask_path)
+
+        if not cand.exists():
+            raise FileNotFoundError(f"FOV mask not found at {cand}")
+
+        # preprocess the existing mask to align geometry
+        fov_mask = preprocess_mask(str(cand), target_size=target_size)[0]  # (1,H,W)->(H,W)
 
         if fov_mask is not None:
             g_eq *= fov_mask  # elementwise gating
 
     return np.expand_dims(g_eq.astype(np.float32), axis=0)  # (1,H,W) float32 in [0,1]
+
 
 
 '''
