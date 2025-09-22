@@ -37,8 +37,8 @@ def get_train_augs(size: int = 512):  # by default, expects images resized to 51
             shear={"x": (0, 0), "y": (0, 0)},                        # no shear to avoid bending vessels
             interpolation=cv2.INTER_LINEAR,                          # bilinear for image
             mask_interpolation=cv2.INTER_NEAREST,                    # nearest for masks/FOV
-            mode="constant",                                         # fills areas outside the FOV with cval
-            cval=0,                                                  # fill value = 0 (black) to match FOV background
+            border_mode=cv2.BORDER_CONSTANT,                                         # fills areas outside the FOV with cval
+            #cval=0,                                                  # fill value = 0 (black) to match FOV background
             p=0.75                                                   # applies this transform 75% of the time
         ),
 
