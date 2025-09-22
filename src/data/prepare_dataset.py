@@ -7,11 +7,16 @@ import re
 Split = Literal["training", "test"]
 
 def _natural_key(p: Path):
-    s = p.stem.lower()
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+    s = p.stem.lower() # .stem to get filename without extension ("21_training")
+     # splits the stem into chunks, separating digit sequences ("21", "training") 
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)] # for each chunk, convert digit-only pieces
+    # returns a list like [21, "_training"] -- will be used as a sort key
+
 
 def _list_sorted_files(dirpath: Path):
-    return sorted([p for p in dirpath.glob("*") if p.is_file()], key=_natural_key)
+    # Path.glob("*") lists all entries (files + directories) inside dirpath
+    # p.is_file filters out everything that isn’t a file. removes directories like "subfolder" so we only keep .png, .jpg
+    return sorted([p for p in dirpath.glob("*") if p.is_file()], key=_natural_key) # use natural key to sort by number
 
 def build_pairs_for_split(
     dataset_root: str,           # e.g. "../data/raw/DRIVE"
