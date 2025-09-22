@@ -85,30 +85,39 @@ def build_all_train_pairs(
 # -------------------
 # Sanity check helpers
 # -------------------
+
+# function that returns a dict of counts (images, labels, fov_masks) for one dataset/split
 def sanity_check_counts(dataset_root: str, split: Split = "training", label_folder: str = "1st_manual") -> Dict[str, int]:
     root = Path(dataset_root)
-    img_dir = root / split / "images"
+
+    # build three folder paths like ../data/raw/DRIVE/training/images
+    img_dir = root / split / "images"  
     lab_dir = root / split / label_folder
     msk_dir = root / split / "mask"
 
+    # list all entries (files and folders) under each dir
     imgs = list((img_dir).glob("*"))
     labs = list((lab_dir).glob("*"))
     msks = list((msk_dir).glob("*")) if msk_dir.exists() else []
 
+    # build a dict with file counts only (filters out subfolders)
+    # returns something like {"images": 20, "labels": 20, "fov_masks": 20}
     return {
         "images": len([p for p in imgs if p.is_file()]),
         "labels": len([p for p in labs if p.is_file()]),
         "fov_masks": len([p for p in msks if p.is_file()]),
     }
 
+# return the first k (image, label) basenames so we can quickly eyeball alignment in logs
 def sanity_check_sample_alignment(pairs: List[Tuple[str, str]], k: int = 3) -> List[Tuple[str, str]]:
     """
     Return the first k (image, label) basenames so you can quickly eyeball alignment in logs.
     """
     view = []
-    for (img, lab) in pairs[:k]:
-        view.append((Path(img).name, Path(lab).name))
-    return view
+    for (img, lab) in pairs[:k]: # iterate over the first k (image_path, label_path) tuples from the list
+        view.append((Path(img).name, Path(lab).name)) # take just the filename part (no directories) and append the (image_name, label_name) pair
+    return view # return a list like [("21_training.png", "21_manual1.png"), ...]
+
 
 def assert_dataset_layout(dataset_root: str, split: Split = "training", label_folder: str = "1st_manual"):
     """
