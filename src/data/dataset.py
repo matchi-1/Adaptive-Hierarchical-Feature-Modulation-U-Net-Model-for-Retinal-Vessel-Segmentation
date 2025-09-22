@@ -29,20 +29,25 @@ class FundusSegDataset(Dataset):
 
     def __init__(
         self,
-        pairs: List[Tuple[str, str]],
-        image_size: int = 512,
-        augs=None,
-        strict_fov: bool = True,
-        use_gamma: bool = True,
+        pairs: List[Tuple[str, str]],  # list of (image_path, label_path) strings (from prepare step)
+        image_size: int = 512,         # square output size (preprocessing resizes/pads to this)
+        augs=None,                     # albumentations Compose or None
+        strict_fov: bool = True,       # if True, raise if the expected FOV file is missing; if False, skip FOV gating when absent
+        
+        # preprocessing values
+        use_gamma: bool = True,        
         gamma: float = 0.9,
         clahe_clip: float = 2.0,
         clahe_tiles: int = 8,
     ):
+        
+        # save config/inputs on the instance for later use in __getitem__
         self.pairs = pairs
         self.size = image_size
         self.augs = augs
         self.strict_fov = strict_fov
 
+        # configuration bundle for preprocess_image_retina
         self._pre_kw = dict(
             target_size=image_size,
             use_gamma=use_gamma,
@@ -54,6 +59,7 @@ class FundusSegDataset(Dataset):
             auto_discover_mask=False,
         )
 
+    # tells PyTorch how many samples the dataset has (for indexing, batching)
     def __len__(self) -> int:
         return len(self.pairs)
 
