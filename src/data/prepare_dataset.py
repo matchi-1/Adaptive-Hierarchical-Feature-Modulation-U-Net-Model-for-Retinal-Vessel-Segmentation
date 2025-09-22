@@ -18,11 +18,13 @@ def _list_sorted_files(dirpath: Path):
     # p.is_file filters out everything that isn’t a file. removes directories like "subfolder" so we only keep .png, .jpg
     return sorted([p for p in dirpath.glob("*") if p.is_file()], key=_natural_key) # use natural key to sort by number
 
+
 def build_pairs_for_split(
     dataset_root: str,           # e.g. "../data/raw/DRIVE"
     split: Split = "training",   # "training" or "test"
-    label_folder: str = "1st_manual",
-) -> List[Tuple[str, str]]:
+    label_folder: str = "1st_manual", # which label folder to pair with images (1st_manual by default)
+) -> List[Tuple[str, str]]: # returns a list of (image_path, label_path) pairs
+    
     """
     Build (image_path, label_path) pairs for a single dataset (DRIVE/CHASEDB1/STARE) and split.
 
@@ -32,16 +34,16 @@ def build_pairs_for_split(
       <root>/<split>/mask/*.*
     Pairs are created by natural sort order (index-aligned filenames).
     """
-    root = Path(dataset_root)
-    img_dir = root / split / "images"
-    lab_dir = root / split / label_folder
+    root = Path(dataset_root)                    # converts the dataset root into a Path object 
+    img_dir = root / split / "images"            # builds the full path to the images folder  "../data/raw/DRIVE/training/images"
+    lab_dir = root / split / label_folder        # builds the full path to the labels folder  "../data/raw/DRIVE/training/1st_manual"
 
     if not img_dir.exists():
         raise FileNotFoundError(f"[prepare_dataset] Missing images dir: {img_dir}")
     if not lab_dir.exists():
         raise FileNotFoundError(f"[prepare_dataset] Missing labels dir: {lab_dir}")
 
-    imgs = _list_sorted_files(img_dir)
+    imgs = _list_sorted_files(img_dir)  # get all files in dir, sorted naturally
     labs = _list_sorted_files(lab_dir)
 
     if len(imgs) == 0:
@@ -49,23 +51,35 @@ def build_pairs_for_split(
     if len(labs) == 0:
         raise RuntimeError(f"[prepare_dataset] No labels found in {lab_dir}")
 
-    n = min(len(imgs), len(labs))
-    pairs = [(str(imgs[i]), str(labs[i])) for i in range(n)]
+    n = min(len(imgs), len(labs)) # chooses the smaller count (in case one folder has extra files)
+    pairs = [(str(imgs[i]), str(labs[i])) for i in range(n)] # builds a list of tuples where each image is paired with its corresponding label at the same index
     return pairs
 
+    # sample return value:
+    #  [
+    #   ("../data/raw/DRIVE/training/images/01_training.jpg",
+    #    "../data/raw/DRIVE/training/1st_manual/01_manual1.png"),
+    #   ("../data/raw/DRIVE/training/images/02_training.jpg",
+    #    "../data/raw/DRIVE/training/1st_manual/02_manual1.png"),
+    #   ...
+    # ]
+
 def build_all_train_pairs(
-    raw_root: str = "../data/raw",
+    raw_root: str = "../data/raw",  # top-level folder where all datasets live
     datasets=("DRIVE", "CHASEDB1", "STARE"),
     label_folder: str = "1st_manual",
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str]]:  # returns a flat list of (image_path, label_path) pairs across all datasets
+    
     """
     Concatenate training pairs across datasets.
     """
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[str, str]] = []  # prep empty list to hold all pairs
+    
+    # iterate through each dataset (DRIVE, CHASEDB1, STARE)
     for ds in datasets:
-        ds_root = str(Path(raw_root) / ds)
-        pairs = build_pairs_for_split(ds_root, split="training", label_folder=label_folder)
-        out.extend(pairs)
+        ds_root = str(Path(raw_root) / ds)  # build the path to that dataset’s folder;  if raw_root="../data/raw" and ds="DRIVE", → ds_root = "../data/raw/DRIVE".
+        pairs = build_pairs_for_split(ds_root, split="training", label_folder=label_folder) # get the (image, label) pairs for that dataset’s training split
+        out.extend(pairs) # add those pairs to the master list
     return out
 
 # -------------------
