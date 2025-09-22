@@ -92,62 +92,13 @@ class FundusSegDataset(Dataset):
     
     
 # ----- main access -----
-# def __getitem__(self, idx: int) -> Dict[str, Any]:
-#     img_path, lab_path = self.pairs[idx]    # picks the (image_path, label_path) pair at index idx
-
-#     img_hw = self._load_image_hw(img_path)          # load + preprocess image (no FOV yet)
-#     msk_hw = self._load_label_hw(lab_path)          # load vessel mask
-
-#     # Load FOV mask but do NOT apply yet (we’ll apply AFTER augs so background stays zero)
-#     fov_path = derive_fov_mask_path_from_image(img_path)
-#     fov_file = Path(fov_path)
-#     if not fov_file.exists():
-#         if self.strict_fov:
-#             raise FileNotFoundError(f"[FundusSegDataset] Missing FOV mask: {fov_file}")
-#         fov_hw = np.ones_like(img_hw, dtype=np.float32)  # fallback = no clamping
-#     else:
-#         fov_hw = preprocess_mask(str(fov_file), target_size=self.size)[0]  # (H,W) {0,1}
-
-#     if self.augs is not None:
-#         # run augmentation; pass fov so image/mask/fov share identical geometry
-#         out = self.augs(image=img_hw, mask=msk_hw, fov=fov_hw)
-#         img_t = out["image"]  # result of augmentation is torch [1,H,W]
-#         msk_t = out["mask"]
-#         fov_t = out["fov"]
-#         if msk_t.ndim == 2:  # if mask comes out as [H,W] then add channel dimension so it matches the image ([1,H,W])
-#             msk_t = msk_t.unsqueeze(0)
-#         if fov_t.ndim == 2:
-#             fov_t = fov_t.unsqueeze(0)
-#     else:  # directly converts numpy image to a PyTorch tensor
-#         img_t = torch.from_numpy(img_hw).unsqueeze(0).float()
-#         msk_t = torch.from_numpy(msk_hw).unsqueeze(0).float()
-#         fov_t = torch.from_numpy(fov_hw).unsqueeze(0).float()
-
-#     # Apply FOV AFTER augs so background is clamped to zero even after photometric ops
-#     img_t = img_t * fov_t
-
-#     # thresholds the mask/FOV to guarantee binary {0,1} values
-#     msk_t = (msk_t > 0.5).float()
-#     fov_t = (fov_t > 0.5).float()
-
-#     return {  # returns a structured dict for one training sample
-#         "image": img_t,   # preprocessed retina (float tensor [1,H,W])
-#         "mask": msk_t,    # preprocessed vessel segmentation ground truth (binary [1,H,W])
-#         "fov": fov_t,     # preprocessed FOV mask (binary [1,H,W])
-#         "image_path": img_path,
-#         "label_path": lab_path,
-#     }
-
-
-    # ----- main access -----
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        img_path, lab_path = self.pairs[idx]    # (image_path, label_path)
+        img_path, lab_path = self.pairs[idx]    # picks the (image_path, label_path) pair at index idx
 
-        # 1) preprocess image/mask (no FOV yet)
-        img_hw = self._load_image_hw(img_path)          # (H,W) float [0,1]
-        msk_hw = self._load_label_hw(lab_path)          # (H,W) {0,1}
+        img_hw = self._load_image_hw(img_path)          # load + preprocess image (no FOV yet)
+        msk_hw = self._load_label_hw(lab_path)          # load vessel mask
 
-        # 2) load FOV mask but DO NOT apply yet (we'll clamp after augs)
+        # Load FOV mask but do NOT apply yet (we’ll apply AFTER augs so background stays zero)
         fov_path = derive_fov_mask_path_from_image(img_path)
         fov_file = Path(fov_path)
         if not fov_file.exists():
@@ -157,31 +108,34 @@ class FundusSegDataset(Dataset):
         else:
             fov_hw = preprocess_mask(str(fov_file), target_size=self.size)[0]  # (H,W) {0,1}
 
-        # 3) augs: transform image/mask/FOV with identical geometry
         if self.augs is not None:
+            # run augmentation; pass fov so image/mask/fov share identical geometry
             out = self.augs(image=img_hw, mask=msk_hw, fov=fov_hw)
-            img_t = out["image"]               # torch [1,H,W]
-            msk_t = out["mask"]                # torch [1,H,W] or [H,W]
-            fov_t = out["fov"]                 # torch [1,H,W] or [H,W]
-            if msk_t.ndim == 2: msk_t = msk_t.unsqueeze(0)
-            if fov_t.ndim == 2: fov_t = fov_t.unsqueeze(0)
-        else:
+            img_t = out["image"]  # result of augmentation is torch [1,H,W]
+            msk_t = out["mask"]
+            fov_t = out["fov"]
+            if msk_t.ndim == 2:  # if mask comes out as [H,W] then add channel dimension so it matches the image ([1,H,W])
+                msk_t = msk_t.unsqueeze(0)
+            if fov_t.ndim == 2:
+                fov_t = fov_t.unsqueeze(0)
+        else:  # directly converts numpy image to a PyTorch tensor
             img_t = torch.from_numpy(img_hw).unsqueeze(0).float()
             msk_t = torch.from_numpy(msk_hw).unsqueeze(0).float()
             fov_t = torch.from_numpy(fov_hw).unsqueeze(0).float()
 
-        # 4) apply FOV AFTER augs to zero-out background
+        # Apply FOV AFTER augs so background is clamped to zero even after photometric ops
         img_t = img_t * fov_t
 
-        # 5) hard-binarize masks
+        # thresholds the mask/FOV to guarantee binary {0,1} values
         msk_t = (msk_t > 0.5).float()
         fov_t = (fov_t > 0.5).float()
 
-        return {
-            "image": img_t,
-            "mask":  msk_t,
-            "fov":   fov_t,          # <-- REQUIRED so your notebook can access batch["fov"]
+        return {  # returns a structured dict for one training sample
+            "image": img_t,   # preprocessed retina (float tensor [1,H,W])
+            "mask": msk_t,    # preprocessed vessel segmentation ground truth (binary [1,H,W])
+            "fov": fov_t,     # preprocessed FOV mask (binary [1,H,W])
             "image_path": img_path,
             "label_path": lab_path,
         }
+
 
