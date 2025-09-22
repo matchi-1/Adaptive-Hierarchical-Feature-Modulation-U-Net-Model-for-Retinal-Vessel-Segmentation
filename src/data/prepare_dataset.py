@@ -6,6 +6,19 @@ import re
 
 Split = Literal["training", "test"]
 
+
+'''
+_natural_key
+Purpose:
+    - Produce a "natural" sort key so numbers inside filenames sort numerically (e.g., 2 < 10).
+    - Avoids lexicographic misordering like "10_training" coming before "2_training".
+Inputs:
+    - p: pathlib.Path for a file (we only use the stem).
+Outputs:
+    - List of mixed ints/strings usable as a stable Python sort key, e.g., [21, "_training"].
+Notes:
+    - Splits the stem into digit and non-digit chunks; digit chunks are cast to int.
+'''
 def _natural_key(p: Path):
     s = p.stem.lower() # .stem to get filename without extension ("21_training")
      # splits the stem into chunks, separating digit sequences ("21", "training") 
@@ -13,11 +26,36 @@ def _natural_key(p: Path):
     # returns a list like [21, "_training"] -- will be used as a sort key
 
 
+'''
+_list_sorted_files
+Purpose:
+    - List files directly under a directory and sort them in "natural" numeric order.
+Inputs:
+    - dirpath: pathlib.Path directory to scan (non-recursive).
+Outputs:
+    - List[pathlib.Path] of files sorted by _natural_key.
+Notes:
+    - Excludes subdirectories (filters with p.is_file()).
+'''
+
 def _list_sorted_files(dirpath: Path):
     # Path.glob("*") lists all entries (files + directories) inside dirpath
     # p.is_file filters out everything that isn’t a file. removes directories like "subfolder" so we only keep .png, .jpg
     return sorted([p for p in dirpath.glob("*") if p.is_file()], key=_natural_key) # use natural key to sort by number
 
+
+'''
+_build_pairs_for_split
+Purpose:
+    - Create (image_path, label_path) pairs for a single dataset and split.
+    - Ensures image/label lists are aligned by natural sort order.
+Inputs:
+    - dataset_root: str, dataset root (e.g., "../data/raw/DRIVE").
+    - split: {"training","test"} which subset to use.
+    - label_folder: str name of the label directory (e.g., "1st_manual" or "2nd_manual").
+Outputs:
+    - List[Tuple[str, str]] of (image_path, label_path) pairs (as strings).
+'''
 
 def build_pairs_for_split(
     dataset_root: str,           # e.g. "../data/raw/DRIVE"
@@ -64,6 +102,22 @@ def build_pairs_for_split(
     #   ...
     # ]
 
+
+'''
+build_all_train_pairs
+Purpose:
+    - Aggregate training (image,label) pairs across multiple datasets into one list.
+Inputs:
+    - raw_root: str top-level path that contains dataset folders (e.g., "../data/raw").
+    - datasets: Iterable of dataset folder names (e.g., ("DRIVE","CHASEDB1","STARE")).
+    - label_folder: str label directory name to use (e.g., "1st_manual").
+Outputs:
+    - List[Tuple[str, str]] flattened list of (image_path, label_path) pairs across datasets.
+Notes:
+    - Calls build_pairs_for_split(..., split="training") for each dataset, then concatenates.
+    - Order of datasets is preserved as provided in `datasets`.
+'''
+
 def build_all_train_pairs(
     raw_root: str = "../data/raw",  # top-level folder where all datasets live
     datasets=("DRIVE", "CHASEDB1", "STARE"),
@@ -86,7 +140,18 @@ def build_all_train_pairs(
 # Sanity check helpers
 # -------------------
 
-# function that returns a dict of counts (images, labels, fov_masks) for one dataset/split
+
+'''
+_sanity_check_counts
+Purpose:
+    - Report counts of images, labels, and FOV masks for a specific dataset split.
+Inputs:
+    - dataset_root: str dataset root (e.g., "../data/raw/DRIVE").
+    - split: {"training","test"} which subset to inspect.
+    - label_folder: str label directory to count (e.g., "1st_manual").
+Outputs:
+    - Dict[str,int] with keys {"images","labels","fov_masks"} and integer counts.
+'''
 def sanity_check_counts(dataset_root: str, split: Split = "training", label_folder: str = "1st_manual") -> Dict[str, int]:
     root = Path(dataset_root)
 
@@ -108,6 +173,20 @@ def sanity_check_counts(dataset_root: str, split: Split = "training", label_fold
         "fov_masks": len([p for p in msks if p.is_file()]),
     }
 
+
+'''
+_sanity_check_sample_alignment
+Purpose:
+    - Print-friendly peek at the first k (image,label) pairs to verify index alignment.
+Inputs:
+    - pairs: List of (image_path, label_path) tuples (strings).
+    - k: int number of pairs to preview.
+Outputs:
+    - List[Tuple[str,str]] of basenames only, e.g., [("21_training.png","21_manual1.png"), ...].
+Notes:
+    - Helps visually confirm that sorting and pairing rules are correct.
+'''
+
 # return the first k (image, label) basenames so we can quickly eyeball alignment in logs
 def sanity_check_sample_alignment(pairs: List[Tuple[str, str]], k: int = 3) -> List[Tuple[str, str]]:
     """
@@ -118,6 +197,18 @@ def sanity_check_sample_alignment(pairs: List[Tuple[str, str]], k: int = 3) -> L
         view.append((Path(img).name, Path(lab).name)) # take just the filename part (no directories) and append the (image_name, label_name) pair
     return view # return a list like [("21_training.png", "21_manual1.png"), ...]
 
+
+'''
+_assert_dataset_layout
+Purpose:
+    - Hard validation that expected subdirectories exist and are non-empty for a given split.
+Inputs:
+    - dataset_root: str dataset root (e.g., "../data/raw/DRIVE").
+    - split: {"training","test"} which subset to inspect.
+    - label_folder: str label directory name to require (e.g., "1st_manual").
+Outputs:
+    - None (raises on failure).
+'''
 
 def assert_dataset_layout(dataset_root: str, split: Split = "training", label_folder: str = "1st_manual"):
     """
