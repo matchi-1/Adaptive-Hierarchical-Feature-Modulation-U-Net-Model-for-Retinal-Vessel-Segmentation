@@ -4,13 +4,11 @@ import torch.nn.functional as F
 
 class MSU(nn.Module):
     """
-    Multi-scale Subtraction Unit (MSU)
-
     Purpose:
         Compute a multi-scale *difference map* between two feature maps by applying
         shared 1×1, 3×3, and 5×5 convolutions to each input, taking the absolute
         difference at each scale, then summing those differences. The result can be
-        overlaid (added) onto a base feature map to enhance vessel-like structures
+        added onto a base feature map to enhance vessel-like structures
         and boundaries.
 
     Parameters:
@@ -32,7 +30,7 @@ class MSU(nn.Module):
 
     Notes:
         Operation: For scales k ∈ {1, 3, 5},
-          out = Σ_k | Conv_k(F_A) − Conv_k(F_B) |
+            out = Σ_k | (Conv_k(F_A) − Conv_k(F_B)) |
         where the Conv_k weights are *shared* between the two branches (F_A and F_B).
         The absolute function is non-differentiable at 0; PyTorch uses a subgradient
         there, which is standard and works well in practice.
@@ -53,10 +51,16 @@ class MSU(nn.Module):
         self.bn = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
         self.act = nn.ReLU(inplace=True) if activation else nn.Identity()
 
-        # simple Kaiming init
+        # simple Kaiming init; weight + bias init for convs
         for m in [self.conv1, self.conv3, self.conv5]:
-            nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+
+            # draws each conv weight from a normal distribution whose variance 
+            # is chosen to keep activations well-scaled in ReLU
+            nn.init.kaiming_normal_(m.weight, nonlinearity='relu') 
+
             if m.bias is not None:
+                # bias = 0 is a safe default; 
+                # when a following BatchNorm is present, the conv bias is effectively redundant
                 nn.init.zeros_(m.bias)
 
     def forward(self, F_A: torch.Tensor, F_B: torch.Tensor) -> torch.Tensor:
