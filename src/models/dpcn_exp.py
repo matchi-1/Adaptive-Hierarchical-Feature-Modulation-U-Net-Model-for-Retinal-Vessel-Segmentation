@@ -10,22 +10,37 @@ class DPCN(nn.Module):
         self.iters = iters
 
         # ---- Coupled Linking setup ----
-        k = 3  # 3x3 deformable kernel
+
+        # (insert eq here later)
+
+        k = 3  # 3x3 deformable kernel 
+        # in deformable conv, each location in the kernel (9 taps) needs 2 values: 
+        #           Δ𝑚 (offset for y-direction), Δ𝑛 (offset for x-direction),
+        #           since for each pixel/sample point we compute it as:
+        #           (𝑚 + i + Δ𝑚, 𝑛 + j + Δ𝑛) where (i,j) are fixed grid offsets (e.g. (i = -1, j =-1 --> top left neighbor/tap)).
+        
+        # total offset channels = 2×3×3=18
         off_ch = 2 * k * k  # 18 channels for (dy,dx) per tap
 
         # Offset predictor: predicts offsets from the previous state Y(n-1)
-        self.offset_conv = nn.Conv2d(self.channels, off_ch, kernel_size=3, padding=1)
-        nn.init.zeros_(self.offset_conv.weight)  # init near zero so first ≈ plain conv
-        nn.init.zeros_(self.offset_conv.bias)
+
+        # Conv2d input:  feature map [N, C_in, H, W] ; output: offsets [N, 18, H, W]
+        #   self.channels = C_in (number of channels in Y(n-1) )
+        #   off_ch = 18 (number of output channels = 2*k*k of this convolutional layer)
+        #   kernel filter with shape (out_ch, in_ch, k, k) = (18, C, 3, 3), padding is 1 to keep same H,W
+        # Conceptually, at each pixel (h,w), this layer outputs 18 values: (dy,dx) offsets for each of the 9 taps in the 3x3 kernel
+        self.offset_conv = nn.Conv2d(self.channels, off_ch, kernel_size=3, padding=1) 
+        nn.init.zeros_(self.offset_conv.weight)  # init near zero so first == plain conv
+        nn.init.zeros_(self.offset_conv.bias)    
 
         # Kernel weights for the deformable conv (W(i,j) in the paper)
-        weight = torch.empty(self.channels, self.channels, k, k)
-        nn.init.kaiming_normal_(weight, nonlinearity="relu")
-        self.weight = nn.Parameter(weight)
-        self.bias   = nn.Parameter(torch.zeros(self.channels))
+        weight = torch.empty(self.channels, self.channels, k, k) # initialize weight tensor with shape (out_ch, in_ch, k, k) 
+        nn.init.kaiming_normal_(weight, nonlinearity="relu") # give weights good starting values so they won't collapse or explode during training 
+        self.weight = nn.Parameter(weight)  # make weight a learnable parameter thru backpropagation
+        self.bias   = nn.Parameter(torch.zeros(self.channels)) # add bias term per output channel ; after summing all taps, add bias
 
         # normalization (helps stability)
-        self.norm = nn.BatchNorm2d(self.channels)
+        self.norm = nn.BatchNorm2d(self.channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
 
     def coupled_linking(self, y_prev):
         """
