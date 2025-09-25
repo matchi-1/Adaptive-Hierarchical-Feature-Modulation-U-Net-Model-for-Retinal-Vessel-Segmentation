@@ -143,9 +143,7 @@ class DPCNIter(nn.Module):
 
         return y, E
 
-
-class DPCN(nn.Module):
-    """
+"""
     Full DPCN block that runs T iterations on shallow features.
 
     Usage:
@@ -156,28 +154,29 @@ class DPCN(nn.Module):
       - We project input to 'channels' (if needed), run iterations, and optionally project back.
       - By default, keep channels the same for simplicity.
     """
+# src/models/dpcn.py
+class DPCN(nn.Module):
     def __init__(
         self,
         in_ch: int,
-        channels: Optional[int] = None,   # if None, use in_ch
+        channels: Optional[int] = None,
         iters: int = 3,
         beta: float = 0.5,
         aE: float = 0.5,
         V_E: float = 1.0,
         use_deformable: bool = True,
-        project_out: bool = False         # set True if you want an output projection layer
+        project_out: bool = False,
+        clamp_each_iter: bool = True,   # <-- add this for parity with VAT
     ):
         super().__init__()
         channels = channels or in_ch
         self.iters = int(iters)
         self.channels = channels
+        self.clamp_each_iter = clamp_each_iter
 
-        # project in->channels if needed
-        self.proj_in = nn.Identity() if in_ch == channels else nn.Conv2d(in_ch, channels, kernel_size=1)
-        # optional out projection
+        self.proj_in  = nn.Identity() if in_ch == channels else nn.Conv2d(in_ch, channels, kernel_size=1)
         self.proj_out = nn.Identity() if not project_out else nn.Conv2d(channels, in_ch, kernel_size=1)
 
-        # build the iteration cell (weights are shared across iterations, matching the paper's iterative process)
         self.cell = DPCNIter(
             channels=channels,
             beta=beta,
@@ -186,22 +185,27 @@ class DPCN(nn.Module):
             use_deformable=use_deformable
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (N, C_in, H, W)
-        returns: (N, C_out, H, W) where C_out == C_in if project_out=False (or == C_in via 1x1 if True)
-        """
-        # Feeding Input F = I_OR (the paper uses raw grayscale; in nets this is usually the shallow feature)
-        F = self.proj_in(x)              # (N, C, H, W)
+    def forward(self, x: torch.Tensor, fov: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Feeding input
+        F = self.proj_in(x)
 
-        # Initialize Y(0) and E(0)
-        # Reasonable choices: Y(0) = sigmoid(F) (already in [0,1]-ish) and E(0) = zeros
+        # Init states
         y = torch.sigmoid(F)
         E = torch.zeros_like(F)
 
-        # Iterate T times
+        # Iterate once (no second loop!)
         for _ in range(self.iters):
             y, E = self.cell(y_prev=y, F=F, E_prev=E)
+            # optional FOV clamp each step
+            if fov is not None and self.clamp_each_iter:
+                y = y * fov
 
         out = self.proj_out(y)
+
+        # If you didn't clamp each iteration, at least clamp final output
+        if fov is not None and not self.clamp_each_iter:
+            out = out * fov
+
         return out
+
+
