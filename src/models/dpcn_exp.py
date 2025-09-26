@@ -3,11 +3,17 @@ import torch.nn as nn
 from torchvision.ops import deform_conv2d
 
 class DPCN(nn.Module):
-    def __init__(self, in_ch, channels=None, iters=3):
+    def __init__(self, in_ch, channels=None, iters=3, beta_init=0.5):
         super().__init__()
         self.in_ch = in_ch
-        self.channels = channels or in_ch   # default: same channels as input
+        self.channels = channels or in_ch   # default: same channels as input (should be 32 / 64 / 128)
         self.iters = iters
+
+        # ---- project input to internal channels once; F(n) will reuse this ----
+        self.proj_in = nn.Identity() if self.in_ch == self.channels else nn.Conv2d(self.in_ch, self.channels, 1)
+
+        # ---- learnable β for modulation (clamp at runtime to [0,1]) ----
+        self.beta = nn.Parameter(torch.tensor(float(beta_init)))  # learnable
 
         # ---- 1.) Coupled Linking Subsystem Setup ----
 
@@ -42,6 +48,11 @@ class DPCN(nn.Module):
         # normalization (helps stability)
         self.norm = nn.BatchNorm2d(self.channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
 
+
+    # !! ---- SUBSYSTEM FUNCTIONS ---- !!
+
+    # -------- Coupled Linking: L(n) = DefConv(Y(n-1)) ----------
+    # expounded equation for deformable conv: 
     def coupled_linking(self, y_prev):
         """
         Coupled Linking Subsystem:
@@ -70,14 +81,39 @@ class DPCN(nn.Module):
         # 3. normalization
         L = self.norm(L) # stabilize activations
         return L
+    
+    # -------- Feeding Input: F(n) = I_OR ----------
+    # In practice we build F once from x (projection) and reuse it every iteration.
+    def feeding_input(self, x):
+        # x is the original shallow feature (or preprocessed image), shape [N, C_in, H, W]
+        F = self.proj_in(x)  # [N, channels, H, W]
+        return F
+
+    # -------- Modulation: U(n) = F(n) * (1 + β * L(n)) ----------
+    def modulation(self, F, L):
+        beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range
+        U = F * (1.0 + beta * L)                 # element-wise
+        return U
+
 
     def forward(self, x, fov=None):
         """
-        x:   input shallow feature [N,C,H,W]
-        fov: optional binary mask [N,1,H,W]
-        """
-        # for now: just demo coupled linking once
-        y_prev = x
-        L = self.coupled_linking(y_prev)
+        Here we only wire the first three subsystems:
+          - F(n) from x
+          - L(n) from Y(n-1) (we initialize Y(0) from F)
+          - U(n) = F * (1 + β*L)
 
-        return L
+        (Dynamic Threshold + Activation will come next.)
+        """
+        # Build feeding input once (used for all n)
+        F = self.feeding_input(x)    # [N, C, H, W]
+
+        # Simple initialization for Y(0): sigmoid(F) is a common choice
+        y = torch.sigmoid(F)         # Y(0)
+
+        # Run one iteration to demonstrate (you can loop self.iters)
+        L = self.coupled_linking(y)  # L(1) from Y(0)
+        U = self.modulation(F, L)    # U(1)
+
+        # Return the ingredients so you can inspect them (and so we can add the next subsystems later)
+        return {"F": F, "Y_prev": y, "L": L, "U": U}
