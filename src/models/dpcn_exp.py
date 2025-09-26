@@ -10,10 +10,12 @@ class DPCN(nn.Module):
         self.iters = iters
 
         # ---- project input to internal channels once; F(n) will reuse this ----
+        # if in_ch == channels, just use identity (no extra cost or no op)
+        # else use 1x1 conv as a channel aligner -- mixes channels without changing H,W ; example if in_ch=1, channels=32 1×1 conv learns 32 filters over the single input channel, giving an 32-channel
         self.proj_in = nn.Identity() if self.in_ch == self.channels else nn.Conv2d(self.in_ch, self.channels, 1)
 
         # ---- learnable β for modulation (clamp at runtime to [0,1]) ----
-        self.beta = nn.Parameter(torch.tensor(float(beta_init)))  # learnable
+        self.beta = nn.Parameter(torch.tensor(float(beta_init)))  # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
 
         # ---- 1.) Coupled Linking Subsystem Setup ----
 
@@ -91,8 +93,8 @@ class DPCN(nn.Module):
 
     # -------- Modulation: U(n) = F(n) * (1 + β * L(n)) ----------
     def modulation(self, F, L):
-        beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range
-        U = F * (1.0 + beta * L)                 # element-wise
+        beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range so modulation doesn’t blow up or flip signs
+        U = F * (1.0 + beta * L)                 # formula for modulation. states of the feeding units and linking units combine in a second-order manner to produce the internal state 𝑈(𝑛) of the neuron, with the degree ofcombination controlled by the coefficient B
         return U
 
 
