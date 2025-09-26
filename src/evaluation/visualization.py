@@ -1,120 +1,180 @@
-def visualize_predictions(model, dataset, img_paths=None, num_samples=3, threshold=0.5):
+"""
+Visualization utilities for retinal vessel segmentation.
+
+This module provides functions to:
+- Load and normalize images.
+- Run a single model prediction on an image.
+- Visualize samples in a 4-column grid:
+    [Original | Preprocessed | Ground Truth | Predicted].
+"""
+
+import os
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from PIL import Image
+
+
+def _read_original_rgb(path: str) -> np.ndarray:
     """
-    Shows rows of 4 columns:
-      [Original Image | Preprocessed | Ground Truth | Predicted Mask]
-    Handles tensors/ndarrays in CHW/HWC and grayscale/RGB.
+    Load an image from disk as RGB float32 in range [0,1].
+
+    Args:
+        path (str): Path to the image file.
+
+    Returns:
+        np.ndarray: Array of shape (H,W,3) with values in [0,1].
     """
-    import numpy as np
-    import torch
-    import matplotlib.pyplot as plt
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    def _to_display_img(arr):
-        """Return an image suitable for plt.imshow: (H,W) or (H,W,3/4), values normalized if needed."""
-        # -> numpy
-        if torch.is_tensor(arr):
-            arr = arr.detach().cpu().numpy()
-        arr = np.asarray(arr)
+    img = Image.open(path).convert("RGB")
+    arr = np.asarray(img, dtype=np.float32)
+    if arr.max() > 1.0:  # Normalize if stored as 0–255
+        arr = arr / 255.0
+    return arr
 
-        # Handle shape conversions (CHW -> HWC, drop singleton channel)
-        if arr.ndim == 3:
-            # If channels likely first
-            if arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
-                arr = np.transpose(arr, (1, 2, 0))  # CHW -> HWC
-            # If last channel is singleton, drop it to make grayscale
-            if arr.shape[-1] == 1:
-                arr = arr[..., 0]
 
-        # Normalize floats or large integer ranges to [0,1] for safe display
-        if arr.dtype.kind == 'f':
-            mn, mx = np.nanmin(arr), np.nanmax(arr)
-            if mx > mn:
-                arr = (arr - mn) / (mx - mn + 1e-8)
-        elif arr.dtype.kind in 'iu':
-            if arr.max(initial=0) > 255 or arr.min(initial=0) < 0:
-                mn, mx = arr.min(), arr.max()
-                if mx > mn:
-                    arr = (arr - mn) / (mx - mn + 1e-8)
+def _to_hw_numpy_01(t: torch.Tensor) -> np.ndarray:
+    """
+    Convert a tensor into a numpy 2D array [H,W] in range [0,1].
 
-        return arr
+    Handles tensors with extra batch/channel dimensions and rescales
+    values if outside [0,1].
+    """
+    if t.ndim == 3 and t.shape[0] == 1:  # [1,H,W] → [H,W]
+        t = t[0]
 
-    def _to_display_mask(mask):
-        """Return (H,W) mask as numpy."""
-        if torch.is_tensor(mask):
-            mask = mask.detach().cpu().numpy()
-        mask = np.asarray(mask)
-        if mask.ndim == 3:
-            # Prefer squeezing channel-first or channel-last singleton
-            if mask.shape[0] == 1:
-                mask = mask[0]
-            elif mask.shape[-1] == 1:
-                mask = mask[..., 0]
-            else:
-                # If it's 3 channels, take one or convert; here we take first channel
-                mask = mask[..., 0] if mask.shape[-1] in (3, 4) else mask[0]
-        return mask
+    # Move tensor to CPU, remove gradients, cast to float, then convert to NumPy array
+    arr = t.detach().cpu().float().numpy()
+    a_min, a_max = float(arr.min()), float(arr.max())
+    if a_min < 0.0 or a_max > 1.0:
+        # Rescale to [0,1]
+        arr = (arr - a_min) / (a_max - a_min) if a_max > a_min else np.zeros_like(arr)
+    return arr
 
+
+@torch.no_grad() # Disable gradient tracking (saves memory and speeds up inference)
+def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
+    """
+    Run model prediction on a single 1xHxW image.
+
+    Args:
+        model: Segmentation model (PyTorch).
+        img_1hw (torch.Tensor): Single-channel tensor [1,H,W].
+        device (str): Device ('cpu' or 'cuda').
+        threshold (float): Threshold for binary prediction.
+
+    Returns:
+        tuple:
+            prob_np (np.ndarray): Probability map [H,W].
+            bin_np (np.ndarray): Binary mask (thresholded).
+    """
     model.eval()
-    num_samples = min(num_samples, len(dataset))
+    x = img_1hw.unsqueeze(0).to(device)  # Add batch → [1,1,H,W]
+    logits = model(x)
 
-    fig, axes = plt.subplots(num_samples, 4, figsize=(16, 4 * num_samples))
-    if num_samples == 1:
-        axes = axes[None, :]  # ensure 2D indexing
+    if isinstance(logits, (list, tuple)):
+        logits = logits[-1]  # Use last output if multiple
 
-    for i in range(num_samples):
-        # dataset should return: (image (tensor), true_mask (tensor), raw_img (np or tensor))
-        image, true_mask, raw_img = dataset[i]
+    # Handle different output shapes
+    if logits.ndim == 4:
+        if logits.shape[1] == 2:  # Two-class output
+            prob = torch.softmax(logits, dim=1)[:, 1, ...][0]
+        elif logits.shape[1] == 1:  # Single channel logits
+            prob = torch.sigmoid(logits[:, 0, ...])[0]
+        else:  # Multi-class
+            prob = torch.softmax(logits, dim=1).max(dim=1).values[0]
+    elif logits.ndim == 3:  # [C,H,W]
+        prob = torch.sigmoid(logits[0])
+    else:
+        raise ValueError(f"Unexpected model output shape: {tuple(logits.shape)}")
 
-        # Forward pass
-        image_tensor = image.unsqueeze(0).to(device)
-        with torch.no_grad():
-          logits = model(image_tensor)  # [1, C, H, W] where C=1 or C=2
+    prob_np = _to_hw_numpy_01(prob)
+    bin_np = (prob_np >= threshold).astype(np.float32)
+    return prob_np, bin_np
 
-          if logits.ndim == 4 and logits.shape[1] == 2:
-              # 2-channel head (bg, vessel)
-              probs_vessel = torch.softmax(logits, dim=1)[0, 1].cpu().numpy()  # vessel prob in [0,1]
-              probs = probs_vessel
-          elif logits.ndim == 4 and logits.shape[1] == 1:
-              # 1-channel head (vessel logit)
-              probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
-          else:
-              # Fallback if model returns [2,H,W] or [H,W]
-              if logits.shape[0] == 2:
-                  probs = torch.softmax(logits, dim=0)[1].cpu().numpy()
-              else:
-                  probs = torch.sigmoid(logits).squeeze().cpu().numpy()
 
-        binary_pred = (probs >= threshold).astype(np.uint8)
+def visualize_samples(
+    model,
+    dataloader,
+    n_rows=8,
+    device=None,
+    threshold=0.5,
+    clamp_pred_with_fov=True,
+    figsize_per_row=(12, 3),
+):
+    """
+    Show a grid of model predictions compared to original and ground truth.
 
-        # Prepare visuals
-        raw_disp = _to_display_img(raw_img)
-        pre_disp = _to_display_img(image)
-        gt_disp = _to_display_mask(true_mask)
+    Grid layout: [Original | Preprocessed | Ground Truth | Predicted].
 
-        # Plot
-        # 1) Original
-        ax = axes[i, 0]
-        ax.imshow(raw_disp, cmap='gray' if raw_disp.ndim == 2 else None)
-        ax.set_title("Original Image")
-        ax.axis('off')
+    Args:
+        model: Trained segmentation model.
+        dataloader: DataLoader yielding dicts with keys "image", "mask",
+                    and optionally "fov", "image_path".
+        n_rows (int): Number of rows to display.
+        device (str): Torch device; defaults to GPU if available.
+        threshold (float): Threshold for binary predictions.
+        clamp_pred_with_fov (bool): Multiply prediction by FOV mask if available.
+        figsize_per_row (tuple): Width, height of each row in figure.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
-        # 2) Preprocessed
-        ax = axes[i, 1]
-        ax.imshow(pre_disp, cmap='gray' if pre_disp.ndim == 2 else None)
-        ax.set_title("Preprocessed")
-        ax.axis('off')
+    n_cols = 4
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(figsize_per_row[0], figsize_per_row[1] * n_rows))
+    if n_rows == 1:
+        axes = np.expand_dims(axes, axis=0)
 
-        # 3) Ground Truth
-        ax = axes[i, 2]
-        ax.imshow(gt_disp, cmap='gray')
-        ax.set_title("Ground Truth")
-        ax.axis('off')
+    rows_done = 0
+    for batch in dataloader:
+        if rows_done >= n_rows:
+            break
 
-        # 4) Predicted Mask
-        ax = axes[i, 3]
-        ax.imshow(binary_pred, cmap='gray')
-        ax.set_title("Predicted Mask")
-        ax.axis('off')
+        imgs = batch["image"]     # Preprocessed images
+        msks = batch["mask"]      # Ground truth masks
+        fovs = batch.get("fov", None)   # FOV
+        paths = batch.get("image_path", None)
+
+        for b in range(imgs.shape[0]):
+            # Loop over all images in the current batch
+            if rows_done >= n_rows:
+                # Stop if we already filled the requested number of rows
+                break
+
+            img_1hw = imgs[b]
+            msk_1hw = msks[b]
+            fov_1hw = fovs[b] if fovs is not None else None
+            path = paths[b] if isinstance(paths, (list, tuple)) and len(paths) > b else None
+
+            # 1. Original (from path if available, else preprocessed)
+            if path and os.path.exists(path):
+                original = _read_original_rgb(path)
+            else:
+                original = _to_hw_numpy_01(img_1hw)
+
+            # 2. Preprocessed
+            pre = _to_hw_numpy_01(img_1hw)
+
+            # 3. Ground Truth
+            gt = _to_hw_numpy_01(msk_1hw)
+
+            # 4. Model Prediction
+            prob, pred = _predict_single(model, img_1hw, device=device, threshold=threshold)
+            if clamp_pred_with_fov and fov_1hw is not None:
+                fov_np = _to_hw_numpy_01(fov_1hw)
+                pred = pred * fov_np  # Restrict prediction to field of view
+
+            row_imgs = [original, pre, gt, pred]
+            titles = ["Original", "Preprocessed", "Ground Truth", f"Predicted (≥{threshold:.2f})"]
+
+            for c in range(n_cols):
+                ax = axes[rows_done, c]
+                ax.imshow(row_imgs[c], cmap="gray", vmin=0.0, vmax=1.0)
+                ax.set_title(titles[c], fontsize=10)
+                ax.axis("off")
+
+            rows_done += 1
 
     plt.tight_layout()
     plt.show()
