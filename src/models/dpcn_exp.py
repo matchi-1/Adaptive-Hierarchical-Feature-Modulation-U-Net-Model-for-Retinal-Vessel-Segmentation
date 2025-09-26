@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 from torchvision.ops import deform_conv2d
@@ -10,7 +11,6 @@ class DPCN(nn.Module):
                  beta_init=0.5,
                  aE=0.5,
                  V_E=1.0,
-                 use_deformable=True,
                  clamp_each_iter=True 
                  ):
         
@@ -53,7 +53,7 @@ class DPCN(nn.Module):
         nn.init.zeros_(self.offset_conv.bias)    
 
         # Kernel weights for the deformable conv (W(i,j) in the paper)
-        weight = torch.empty(self.channels, self.channels, k, k) # initialize weight tensor with shape (out_ch, in_ch, k, k) 
+        weight = torch.empty(self.channels, self.channels, k, k) # initialize weight tensor with shape (out_ch, in_ch, k, k) since L(n) = Y(n-1) which means they should have the same shape
         nn.init.kaiming_normal_(weight, nonlinearity="relu") # give weights good starting values so they won't collapse or explode during training 
         self.weight = nn.Parameter(weight)  # make weight a learnable parameter thru backpropagation
         self.bias   = nn.Parameter(torch.zeros(self.channels)) # add bias term per output channel ; after summing all taps, add bias
@@ -61,6 +61,11 @@ class DPCN(nn.Module):
         # normalization (helps stability)
         self.norm = nn.BatchNorm2d(self.channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
 
+
+        # --- Dynamic Threshold hyperparams from Eq.(5) ---
+        # freeze these as hyperparams for now (no gradients)
+        self.aE  = nn.Parameter(torch.tensor(float(aE)),  requires_grad=False)  # decay constant
+        self.V_E = nn.Parameter(torch.tensor(float(V_E)), requires_grad=False)  # growth scale
 
     # !! ---- SUBSYSTEM FUNCTIONS ---- !!
 
@@ -121,24 +126,38 @@ class DPCN(nn.Module):
     def activate(self, U: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(U - E)
 
-    def forward(self, x, fov=None):
+    def forward(self, x: torch.Tensor, fov: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Here we only wire the first three subsystems:
-          - F(n) from x
-          - L(n) from Y(n-1) (we initialize Y(0) from F)
-          - U(n) = F * (1 + β*L)
-
-        (Dynamic Threshold + Activation will come next.)
+        x:   [N, C_in, H, W]  (raw grayscale or shallow features)
+        fov: [N, 1,   H, W]   (optional {0,1} mask)
         """
-        # Build feeding input once (used for all n)
-        F = self.feeding_input(x)    # [N, C, H, W]
+        # Feeding input (Eq. 2.2): compute once and reuse
+        F = self.feeding_input(x)                          # [N, C, H, W]
 
-        # Simple initialization for Y(0): sigmoid(F) is a common choice
-        y = torch.sigmoid(F)         # Y(0)
+        # Initialize states for iteration 0
+        y = torch.sigmoid(F)                               # reasonable Y(0)
+        E = torch.zeros_like(F)                            # E(0)=0
 
-        # Run one iteration to demonstrate (you can loop self.iters)
-        L = self.coupled_linking(y)  # L(1) from Y(0)
-        U = self.modulation(F, L)    # U(1)
+        for _ in range(self.iters):
+            # 1) Coupled linking: L(n)  (Eq. 2.1)
+            L = self.coupled_linking(y)
 
-        # Return the ingredients so you can inspect them (and so we can add the next subsystems later)
-        return {"F": F, "Y_prev": y, "L": L, "U": U}
+            # 2) Modulation: U(n)      (choose add OR mul)
+            # U = self.modulation_add(F, L)
+            U = self.modulation(F, L)
+
+            # 3) Dynamic threshold: E(n) (Eq. 5)
+            E = self.update_threshold(E, y)
+
+            # 4) Activation: Y(n)        (Eq. 6)
+            y = self.activate(U, E)
+
+            # 5) Optional FOV clamp each step (keeps state zero outside retina)
+            if fov is not None and self.clamp_each_iter:
+                y = y * fov
+
+        # If you didn’t clamp each iteration, at least clamp the final output:
+        if fov is not None and not self.clamp_each_iter:
+            y = y * fov
+
+        return y
