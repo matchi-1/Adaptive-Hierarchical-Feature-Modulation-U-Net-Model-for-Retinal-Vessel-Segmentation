@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torchvision.ops import deform_conv2d
 
+# add docstring here on dpcn including all formulas
+
 class DPCN(nn.Module):
     def __init__(self, 
                  in_ch, 
@@ -67,20 +69,23 @@ class DPCN(nn.Module):
         self.aE  = nn.Parameter(torch.tensor(float(aE)),  requires_grad=False)  # decay constant
         self.V_E = nn.Parameter(torch.tensor(float(V_E)), requires_grad=False)  # growth scale
 
+
+
+
     # !! ---- SUBSYSTEM FUNCTIONS ---- !!
 
-    # -------- Coupled Linking: L(n) = DefConv(Y(n-1)) ----------
-    # expounded equation for deformable conv: 
-    def coupled_linking(self, y_prev):
-        """
-        Coupled Linking Subsystem:
-        L(n) = DefConv(Y(n-1))
+    # -------- Coupled Linking Subsystem ----------
+    """
+    Coupled Linking Subsystem:
+    L(n) = DefConv(Y(n-1))
+    TODO: add expounded formula here
 
-        Args:
-            y_prev: previous iteration output Y(n-1), shape [N,C,H,W]
-        Returns:
-            L: locally enhanced feature map, shape [N,C,H,W]
-        """
+    Args:
+        y_prev: previous iteration output Y(n-1), shape [N,C,H,W]
+    Returns:
+        L: locally enhanced feature map, shape [N,C,H,W]
+    """
+    def coupled_linking(self, y_prev):
         # 1. predict offsets from Y(n-1) using normal Conv2d
         offsets = self.offset_conv(y_prev)  # [N,18,H,W]
 
@@ -101,32 +106,80 @@ class DPCN(nn.Module):
         return L
     
     # -------- Feeding Input Subsystem: F(n) = I_OR ----------
-    # In practice we build F once from x (projection) and reuse it every iteration.
+    """
+    Feeding Input Subsystem
+    F(n) = I_OR
+    Args:
+        x: original shallow feature (or preprocessed image), shape [N, C_in, H, W]
+    Returns:
+        F: projected/computed input feature map, shape [N, C, H, W] where C = self.channels
+    Notes:
+        in practice, we build F once from x (projection) and reuse it every iteration.
+    """
     def feeding_input(self, x):
-        # x is the original shallow feature (or preprocessed image), shape [N, C_in, H, W]
         F = self.proj_in(x)  # [N, channels, H, W]
         return F
 
-    # -------- Modulation Subsystem: U(n) = F(n) * (1 + β * L(n)) ----------
+    # -------- Modulation Subsystem ----------
+    """
+    Modulation Subsystem
+    U(n) = F(n) * (1 + β * L(n))
+
+    Args:
+        F: feeding input feature map
+        L: linking feature map ; output of coupled linking subsystem
+    Returns:
+        U: modulated internal state controlled by β (combining feeding and linking)
+    """
     def modulation(self, F, L):
         beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range so modulation doesn’t blow up or flip signs
         U = F * (1.0 + beta * L)                 # formula for modulation. states of the feeding units and linking units combine in a second-order manner to produce the internal state 𝑈(𝑛) of the neuron, with the degree ofcombination controlled by the coefficient B
         return U
     
     #  ---------- Dynamic Threshold Subsystem ----------
-    # E(n) = exp(-aE) * E(n-1) + (1 - exp(-aE)) * V_E * Y(n-1)
+    """
+    Dynamic Threshold Subsystem
+    E(n) = e^(-aE) * E(n-1) + V_E * Y(n-1)
+
+    Args:
+        E_prev: previous threshold E(n-1)
+        y_prev: previous output Y(n-1)
+    Variables:
+        aE: decay constant (hyperparam) - how fast the threshold decays
+        V_E: growth scale (hyperparam) - how much the last activation raises the threshold
+    Returns:
+        U: modulated internal state controlled by β (combining feeding and linking)
+    """
     def update_threshold(self, E_prev: torch.Tensor, y_prev: torch.Tensor) -> torch.Tensor:
         # keep exp argument non-negative to avoid overflow on weird aE
-        aE = torch.clamp(self.aE, min=1e-6)
-        decay = torch.exp(-aE)                             # scalar in (0,1)
-        grow  = (1.0 - decay) * self.V_E                  # scalar
-        return decay * E_prev + grow * y_prev             # all broadcast over [N,C,H,W]
+        aE = torch.clamp(self.aE, min=1e-6)         # ensure aE is non-negative and greater than 10^-6 (if its non-negative, it'll be more than one so it should remain a positive number)
+        decay = torch.exp(-aE)                      # computes decay rate -- how much of E(n-1) we carry forward. Results in a scalar in from (0,1)
+        E = (decay * E_prev) + (self.V_E * y_prev)  # updates the adaptive threshold using: decay term (ae) + growth term (V_e) proportional to previous output y (Y(n-1))
+        return E   
+        # ! IMPORTANT, GO BACK TO THIS LATER:: stable numerically, experiment with this later
+        # grow  = (1.0 - decay) * self.V_E   
+        # E = decay * E_prev + grow * y_prev          
 
-    # ---------- Activation Subsystem: Y(n) = sigmoid( U(n) - E(n) ) ----------
+
+    # ---------- Activation Subsystem ----------
+    """
+    Activation Subsystem
+    Y(n) = sigmoid( U(n) - E(n) ) 
+
+    Args:
+        U: modulated input from modulation subsystem
+        E: current threshold from dynamic threshold subsystem
+    Returns:
+        Y: subtracted and squashed output
+    """
     def activate(self, U: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
-        return torch.sigmoid(U - E)
+        return torch.sigmoid(U - E) # Y(n): subtract the threshold from the modulated input -- only inputs above the threshold will pass strongly; squashed to [0,1] range using sigmoid
+    
 
-    def forward(self, x: torch.Tensor, fov: Optional[torch.Tensor] = None) -> torch.Tensor:
+    # ---- FULL DPCN FORWARD PASS ----
+    def forward(self,
+                x: torch.Tensor,  # raw grayscale input preprocessed to [N,1,H,W] image
+                fov: Optional[torch.Tensor] = None) -> torch.Tensor: # 
         """
         x:   [N, C_in, H, W]  (raw grayscale or shallow features)
         fov: [N, 1,   H, W]   (optional {0,1} mask)
@@ -135,28 +188,30 @@ class DPCN(nn.Module):
         F = self.feeding_input(x)                          # [N, C, H, W]
 
         # Initialize states for iteration 0
-        y = torch.sigmoid(F)                               # reasonable Y(0)
-        E = torch.zeros_like(F)                            # E(0)=0
+        y = torch.sigmoid(F)                               # reasonable Y(0) -- values are from 0 to 1 so initial "activity" is meaningful
+        E = torch.zeros_like(F)                            # E(0)=0 -- no initial threshold
+        
 
+        # run dpcn for the specified number of iterations
         for _ in range(self.iters):
-            # 1) Coupled linking: L(n)  (Eq. 2.1)
-            L = self.coupled_linking(y)
+            # 1) Coupled linking: L(n)
+            L = self.coupled_linking(y) # produce contextual map using deformable conv
 
-            # 2) Modulation: U(n)      (choose add OR mul)
+            # 2) Modulation: U(n)  
             # U = self.modulation_add(F, L)
-            U = self.modulation(F, L)
+            U = self.modulation(F, L)  # combines raw intensity input F with contextual link L + controlled by learnable β
 
-            # 3) Dynamic threshold: E(n) (Eq. 5)
-            E = self.update_threshold(E, y)
+            # 3) Dynamic threshold: E(n) 
+            E = self.update_threshold(E, y)  # updates the adaptive threshold using: decay term (ae) + growth term (V_e) proportional to previous output y (Y(n-1))
 
-            # 4) Activation: Y(n)        (Eq. 6)
-            y = self.activate(U, E)
+            # 4) Activation: Y(n)    
+            y = self.activate(U, E) # squashes to [0,1] range using sigmoid
 
-            # 5) Optional FOV clamp each step (keeps state zero outside retina)
+            # 5) FOV clamp each step (keeps state zero outside retina)
             if fov is not None and self.clamp_each_iter:
                 y = y * fov
 
-        # If you didn’t clamp each iteration, at least clamp the final output:
+        # if we didn’t clamp each iteration, at least clamp the final output:
         if fov is not None and not self.clamp_each_iter:
             y = y * fov
 
