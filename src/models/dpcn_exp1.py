@@ -1,4 +1,5 @@
 # src/models/dpcn_exp1.py
+# paper faithful implementation of DPCN but threshold update is E(n) = exp(-aE)*E(n-1) + V_E * Y(n-1)
 from typing import Optional, Tuple
 import torch
 import torch.nn as nn

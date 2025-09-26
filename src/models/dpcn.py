@@ -1,172 +1,184 @@
 # src/models/dpcn.py
-from __future__ import annotations
-import math
+# paper faithful implementation of DPCN
 from typing import Optional, Tuple
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torchvision.ops import deform_conv2d
 
-# Try to import deformable conv from torchvision; fallback to standard conv if unavailable
-_HAS_TV_DEFORM = False
-try:
-    from torchvision.ops import deform_conv2d   # weights-first API
-    _HAS_TV_DEFORM = True
-except Exception:
-    _HAS_TV_DEFORM = False
+# if not hasattr(torch.ops.torchvision, "deform_conv2d"):
+#     raise RuntimeError("This build of torchvision lacks deform_conv2d. Install matching torch/vision wheels.")
 
+# add docstring here on dpcn including all formulas
+print("has op:", hasattr(torch.ops.torchvision, "deform_conv2d"))
 
-class _DeformableConv2dOrConv2d(nn.Module):
-    """
-    Small wrapper that performs 3x3 deformable convolution if available,
-    otherwise a plain 3x3 Conv2d (same channels, stride=1, padding=1).
-
-    Inputs:
-      - x:   (N, C_in, H, W)
-      - off: (N, 2*k*k, H, W) offsets for deformable conv (ignored in fallback)
-
-    Output:
-      - y:   (N, C_out, H, W)
-    """
-    def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, bias: bool = True):
-        super().__init__()
-        assert kernel_size == 3, "This wrapper assumes k=3 for simplicity."
-        self.in_ch = in_ch
-        self.out_ch = out_ch
-        self.kernel_size = kernel_size
-
-        if _HAS_TV_DEFORM:
-            # We keep the conv weights as learnable params and call torchvision.ops.deform_conv2d in forward
-            weight = torch.empty(out_ch, in_ch, kernel_size, kernel_size)
-            nn.init.kaiming_normal_(weight, nonlinearity="relu")
-            self.weight = nn.Parameter(weight)
-            self.bias = nn.Parameter(torch.zeros(out_ch)) if bias else None
-        else:
-            # Fallback to plain Conv2d
-            self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2, bias=bias)
-
-    def forward(self, x: torch.Tensor, off: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if _HAS_TV_DEFORM:
-            if off is None:
-                # if offsets not provided, default to zeros (behaves like plain conv with same padding)
-                N, _, H, W = x.shape
-                off = x.new_zeros(N, 2 * self.kernel_size * self.kernel_size, H, W)
-            # stride=1, padding=1, dilation=1, mask=None (no modulated version here)
-            return deform_conv2d(
-                input=x,
-                offset=off,
-                weight=self.weight,
-                bias=self.bias,
-                stride=1,
-                padding=1,
-                dilation=1,
-                mask=None
-            )
-        else:
-            return self.conv(x)
+# Hard-require deformable conv
+if not hasattr(torch.ops.torchvision, "deform_conv2d"):
+    raise RuntimeError(
+        "This build of torchvision lacks deform_conv2d. "
+        "Install matching torch/torchvision wheels."
+    )
 
 
 class DPCNIter(nn.Module):
     """
-    One iteration of the Deformable-convolutional Pulse Coupling Network.
+    One iteration of DPCN (paper-faithful math):
 
-    Subsystems (per the paper):
-      - Coupled Linking:       L(n) = Conv(Y(n-1))  (deformable if available)
-      - Feeding Input:         F(n) = I_OR         (original input / shallow feature)
-      - Modulation:            U(n) = β F(n) + (1-β) L(n)
-      - Dynamic Threshold:     E(n) = exp(-aE) E(n-1) + (1 - exp(-aE)) * V_E * Y(n-1)
-      - Activation:            Y(n) = sigmoid(U(n) - E(n))
 
-    Shapes: all (N, C, H, W)
+      Coupled Linking:   L(n) = DefConv( Y(n-1) )
+      Modulation:        U(n) = F(n) * ( 1 + β * L(n) )
+      Threshold:         E(n) = exp(-aE)*E(n-1) + V_E * Y(n-1)
+                         (you can switch to (1-exp(-aE))*V_E if desired)
+      Activation:        Y(n) = sigmoid( U(n) - E(n) )
+
+
+    Shapes are all [N, C, H, W].
     """
 
-    def __init__(
-        self,
-        channels: int,
-        beta: float = 0.5,            # trade-off feeding vs linking
-        aE: float = 0.5,              # decay rate; higher -> faster decay
-        V_E: float = 1.0,             # growth scale from previous Y
-        use_deformable: bool = True   # try to use deformable conv if available
-    ):
+    def __init__(self, channels: int, beta: float, aE: float, V_E: float):
         super().__init__()
         self.channels = channels
-        self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)  # treat β as hyperparam (freeze)
-        self.aE = nn.Parameter(torch.tensor(float(aE)), requires_grad=False)
-        self.V_E = nn.Parameter(torch.tensor(float(V_E)), requires_grad=False)
 
-        # Offset predictor for k=3 -> 2*k*k = 18 channels
-        self.k = 3
-        off_ch = 2 * self.k * self.k
+        # β, aE, V_E as hyperparams (frozen to match your latest code)
+        self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
+        self.aE  = nn.Parameter(torch.tensor(float(aE)),   requires_grad=False)   # decay constant (hyperparam) - how fast the threshold decays
+        self.V_E = nn.Parameter(torch.tensor(float(V_E)),  requires_grad=False)   # growth scale (hyperparam) - how much the last activation raises the threshold
 
-        # offsets come from Y(n-1); a small conv preserves spatial size
+        # ---- 1.) Coupled Linking Subsystem Setup ----
+        # (insert eq here later)
+
+        k = 3  # 3x3 deformable kernel
+        # in deformable conv, each location in the kernel (9 taps) needs 2 values:
+        #           Δ𝑚 (offset for y-direction), Δ𝑛 (offset for x-direction),
+        #           since for each pixel/sample point we compute it as:
+        #           (𝑚 + i + Δ𝑚, 𝑛 + j + Δ𝑛) where (i,j) are fixed grid offsets (e.g. (i = -1, j =-1 --> top left neighbor/tap)).
+        #
+        # total offset channels = 2×3×3=18
+        off_ch = 2 * k * k  # 18 channels for (dy,dx) per tap
+
+        # Offset predictor: predicts offsets from the previous state Y(n-1)
+        #
+        # Conv2d input:  feature map [N, C_in, H, W] ; output: offsets [N, 18, H, W]
+        #   self.channels = C_in (number of channels in Y(n-1) )
+        #   off_ch = 18 (number of output channels = 2*k*k of this convolutional layer)
+        #   kernel filter with shape (out_ch, in_ch, k, k) = (18, C, 3, 3), padding is 1 to keep same H,W
+        # Conceptually, at each pixel (h,w), this layer outputs 18 values: (dy,dx) offsets for each of the 9 taps in the 3x3 kernel
         self.offset_conv = nn.Conv2d(channels, off_ch, kernel_size=3, padding=1)
-
-        # deformable (or plain) 3x3 conv produces L(n)
-        self.link_conv = _DeformableConv2dOrConv2d(channels, channels, kernel_size=3, bias=True) \
-                         if (use_deformable and _HAS_TV_DEFORM) else \
-                         _DeformableConv2dOrConv2d(channels, channels, kernel_size=3, bias=True)
-
-        # mild normalization on L(n) to stabilize (optional but helpful)
-        self.norm = nn.BatchNorm2d(channels)
-
-        # tiny init so offsets start near zero (behave like plain conv at the beginning)
-        nn.init.zeros_(self.offset_conv.weight)
+        nn.init.zeros_(self.offset_conv.weight)  # init near zero so first == plain conv
         nn.init.zeros_(self.offset_conv.bias)
 
+        # Kernel weights for the deformable conv (W(i,j) in the paper)
+        w = torch.empty(channels, channels, k, k) # initialize weight tensor with shape (out_ch, in_ch, k, k) since L(n) = Y(n-1) which means they should have the same shape
+        nn.init.kaiming_normal_(w, nonlinearity="relu") # give weights good starting values so they won't collapse or explode during training
+        self.weight = nn.Parameter(w)  # make weight a learnable parameter thru backpropagation
+        self.bias   = nn.Parameter(torch.zeros(channels)) # add bias term per output channel ; after summing all taps, add bias
+
+        # normalization (helps stability)
+        self.norm_L = nn.BatchNorm2d(channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
+
+        # optional norm on U(n) to stabilize multiplicative modulation
+        self.norm_U = nn.BatchNorm2d(channels)
+
+    # -------- Coupled Linking Subsystem ----------
+    """
+    Coupled Linking Subsystem:
+    L(n) = DefConv(Y(n-1))
+    TODO: add expounded formula here
+
+
+    Args:
+        y_prev: previous iteration output Y(n-1), shape [N,C,H,W]
+    Returns:
+        L: locally enhanced feature map, shape [N,C,H,W]
+    """
     def forward(self, y_prev: torch.Tensor, F: torch.Tensor, E_prev: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # 1. predict offsets from Y(n-1) using normal Conv2d
+        offsets = self.offset_conv(y_prev)  # [N,18,H,W]
+
+        # 2. apply deformable conv
+        L = deform_conv2d(
+            input=y_prev,  # Y(n-1) previous output
+            offset=offsets, # supplies all Δ𝑚, Δ𝑛 for the 9 taps of the kernel
+            weight=self.weight, # all learnable weights W(i,j)
+            bias=self.bias, # learnable bias per output channel
+            stride=1,   # always 1 keep same spatial size
+            padding=1,
+            dilation=1,
+            mask=None  # no per-tap amplitude mask
+        )
+
+        # 3. normalization
+        L = self.norm_L(L) # stabilize activations
+
+        # -------- Modulation Subsystem ----------
         """
+        Modulation Subsystem
+        U(n) = F(n) * (1 + β * L(n))
+
+
         Args:
-          y_prev : Y(n-1)
-          F      : I_OR (the “feeding input”—original shallow feature)
-          E_prev : E(n-1)
-
+            F: feeding input feature map
+            L: linking feature map ; output of coupled linking subsystem
         Returns:
-          y      : Y(n)
-          E      : E(n)
+            U: modulated internal state controlled by β (combining feeding and linking)
         """
-        # Coupled Linking: L(n) = Conv(Y(n-1))  (deformable conv if offsets provided)
-        offsets = self.offset_conv(y_prev)                     # (N, 18, H, W)
-        L = self.link_conv(y_prev, offsets)                    # (N, C, H, W)
-        L = self.norm(L)
+        beta = torch.clamp(self.beta, 0.0, 1.0)   # keep β in a sane range so modulation doesn’t blow up or flip signs
+        U = F * (1.0 + beta * L)                  # formula for modulation. states of the feeding units and linking units combine in a second-order manner to produce the internal state 𝑈(𝑛) of the neuron, with the degree ofcombination controlled by the coefficient B
+        U = self.norm_U(U)
 
-        # Modulation: U(n) = β F + (1-β) L
-        beta = torch.clamp(self.beta, 0.0, 1.0)
-        U = beta * F + (1.0 - beta) * L
+        #  ---------- Dynamic Threshold Subsystem ----------
+        """
+        Dynamic Threshold Subsystem
+        E(n) = e^(-aE) * E(n-1) + V_E * Y(n-1)
 
-        # Dynamic Threshold:
-        # E(n) = exp(-aE) E(n-1) + (1 - exp(-aE)) * V_E * Y(n-1)
-        decay = torch.exp(-torch.clamp(self.aE, min=1e-6))
-        grow  = (1.0 - decay) * self.V_E
-        E = decay * E_prev + grow * y_prev
 
-        # Activation: Y(n) = sigmoid(U - E)
-        y = torch.sigmoid(U - E)
+        Args:
+            E_prev: previous threshold E(n-1)
+            y_prev: previous output Y(n-1)
+        Variables:
+            aE: decay constant (hyperparam) - how fast the threshold decays
+            V_E: growth scale (hyperparam) - how much the last activation raises the threshold
+        Returns:
+            U: modulated internal state controlled by β (combining feeding and linking)
+        """
+        # keep exp argument non-negative to avoid overflow on weird aE
+        aE = torch.clamp(self.aE, min=1e-6)                      # ensure aE is non-negative and greater than 10^-6 (if its non-negative, it'll be more than one so it should remain a positive number)
+        decay = torch.exp(-aE)                                   # computes decay rate -- how much of E(n-1) we carry forward. Results in a scalar in from (0,1)
+        E = decay * E_prev + self.V_E * y_prev
+        #grow  = (1.0 - decay) * self.V_E  
+        #E = decay * E_prev + grow * y_prev                       # updates the adaptive threshold using: decay term (ae) + growth term (V_e) proportional to previous output y (Y(n-1))
 
+        # ---------- Activation Subsystem ----------
+        """
+        Activation Subsystem
+        Y(n) = sigmoid( U(n) - E(n) )
+
+
+        Args:
+            U: modulated input from modulation subsystem
+            E: current threshold from dynamic threshold subsystem
+        Returns:
+            Y: subtracted and squashed output
+        """
+        y = torch.sigmoid(U - E) # Y(n): subtract the threshold from the modulated input -- only inputs above the threshold will pass strongly; squashed to [0,1] range using sigmoid
         return y, E
 
-"""
-    Full DPCN block that runs T iterations on shallow features.
 
-    Usage:
-      dpcn = DPCN(in_ch=1, iters=4, beta=0.5, aE=0.5, V_E=1.0, use_deformable=True)
-      y = dpcn(x)  # x: (N, C=1, H, W) -> (N, C=1, H, W)
-
-    Notes:
-      - We project input to 'channels' (if needed), run iterations, and optionally project back.
-      - By default, keep channels the same for simplicity.
-    """
-# src/models/dpcn.py
 class DPCN(nn.Module):
+    """
+    Wrapper that runs T iterations of DPCNIter on shallow features.
+    Returns all iteration outputs stacked: [N, T, C, H, W].
+    """
+
     def __init__(
         self,
         in_ch: int,
         channels: Optional[int] = None,
         iters: int = 3,
-        beta: float = 0.5,
+        beta_init: float = 0.5,
         aE: float = 0.5,
-        V_E: float = 1.0,   
-        use_deformable: bool = True,
+        V_E: float = 1.0,
+        clamp_each_iter: bool = True,
         project_out: bool = False,
-        clamp_each_iter: bool = True,   # <-- add this for parity with VAT
     ):
         super().__init__()
         channels = channels or in_ch
@@ -174,24 +186,41 @@ class DPCN(nn.Module):
         self.channels = channels
         self.clamp_each_iter = clamp_each_iter
 
+        # ---- project input to internal channels once; F(n) will reuse this ----
+        # if in_ch == channels, just use identity (no extra cost or no op)
+        # else use 1x1 conv as a channel aligner -- mixes channels without changing H,W ; example if in_ch=1, channels=32 1×1 conv learns 32 filters over the single input channel, giving an 32-channel
         self.proj_in  = nn.Identity() if in_ch == channels else nn.Conv2d(in_ch, channels, kernel_size=1)
+
+        # optional projection back
         self.proj_out = nn.Identity() if not project_out else nn.Conv2d(channels, in_ch, kernel_size=1)
 
+        # one iteration cell with paper-faithful math
+        # ---- learnable β for modulation (clamp at runtime to [0,1]) ----
         self.cell = DPCNIter(
             channels=channels,
-            beta=beta,
+            beta=beta_init,
             aE=aE,
             V_E=V_E,
-            use_deformable=use_deformable
         )
 
+    # -------- Feeding Input Subsystem: F(n) = I_OR ----------
+    """
+    Feeding Input Subsystem
+    F(n) = I_OR
+    Args:
+        x: original shallow feature (or preprocessed image), shape [N, C_in, H, W]
+    Returns:
+        F: projected/computed input feature map, shape [N, C, H, W] where C = self.channels
+    Notes:
+        in practice, we build F once from x (projection) and reuse it every iteration.
+    """
     def forward(self, x: torch.Tensor, fov: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Feeding input
-        F = self.proj_in(x)
+        # Feeding input (Eq. 2.2): compute once and reuse
+        F = self.proj_in(x)                          # [N, C, H, W]
 
-        # Init states
-        y = torch.sigmoid(F)
-        E = torch.zeros_like(F)
+        # Initialize states for iteration 0
+        y = torch.sigmoid(F)                         # reasonable Y(0) -- values are from 0 to 1 so initial "activity" is meaningful
+        E = torch.zeros_like(F)                      # E(0)=0 -- no initial threshold
 
         # --- make fov safe (device + dtype) ---
         if fov is not None:
@@ -200,23 +229,23 @@ class DPCN(nn.Module):
         # collect outputs per iteration
         ys = []    # will hold each Y(n) for n in [1..T]
 
-        # Iterate once (no second loop!)
+        # run dpcn for the specified number of iterations
         for _ in range(self.iters):
-            print(f"DPCN ITER: {_+1}/{self.iters}")
-            y, E = self.cell(y_prev=y, F=F, E_prev=E)
-            # optional FOV clamp each step
+            print(f"DPCN ITER_exp1: {_+1}/{self.iters}")
+            # 1) Coupled linking: L(n) + 2) Modulation + 3) Dynamic threshold + 4) Activation
+            y, E = self.cell(y_prev=y, F=F, E_prev=E)  # produce contextual map using deformable conv; combines raw intensity input F with contextual link L + controlled by learnable β; updates the adaptive threshold; squashes to [0,1] range using sigmoid
+
+            # 5) FOV clamp each step (keeps state zero outside retina)
             if fov is not None and self.clamp_each_iter:
                 y = y * fov
-            
+
             ys.append(y)  # store current output
 
-        #out = self.proj_out(y)
+        # if we didn’t clamp each iteration, at least clamp the final output:
+        if fov is not None and not self.clamp_each_iter:
+            ys[-1] = ys[-1] * fov
+            #y = y * fov
 
-        # If you didn't clamp each iteration, at least clamp final output
-        # if fov is not None and not self.clamp_each_iter:
-        #     out = out * fov
-
-        ys = torch.stack(ys, dim=1)  
+        # stack outputs along new dim: [N, T, C, H, W]
+        ys = torch.stack(ys, dim=1)
         return ys
-
-
