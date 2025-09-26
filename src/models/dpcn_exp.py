@@ -1,9 +1,15 @@
+i want to stay original first to the papers equations. but just change the way this is coded to be  the same as yours
+# src/models/dpcn_exp.py
 from typing import Optional
 import torch
 import torch.nn as nn
 from torchvision.ops import deform_conv2d
 
+# if not hasattr(torch.ops.torchvision, "deform_conv2d"):
+#     raise RuntimeError("This build of torchvision lacks deform_conv2d. Install matching torch/vision wheels.")
+
 # add docstring here on dpcn including all formulas
+print("has op:", hasattr(torch.ops.torchvision, "deform_conv2d"))
 
 class DPCN(nn.Module):
     def __init__(self, 
@@ -28,7 +34,7 @@ class DPCN(nn.Module):
         self.proj_in = nn.Identity() if self.in_ch == self.channels else nn.Conv2d(self.in_ch, self.channels, 1)
 
         # ---- learnable β for modulation (clamp at runtime to [0,1]) ----
-        self.beta = nn.Parameter(torch.tensor(float(beta_init)))  # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
+        self.beta = nn.Parameter(torch.tensor(float(beta_init)), requires_grad=False)   # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
 
         # ---- 1.) Coupled Linking Subsystem Setup ----
 
@@ -132,8 +138,9 @@ class DPCN(nn.Module):
         U: modulated internal state controlled by β (combining feeding and linking)
     """
     def modulation(self, F, L):
-        beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range so modulation doesn’t blow up or flip signs
+        beta = torch.clamp(self.beta, 0.0, 0.1)  # keep β in a sane range so modulation doesn’t blow up or flip signs
         U = F * (1.0 + beta * L)                 # formula for modulation. states of the feeding units and linking units combine in a second-order manner to produce the internal state 𝑈(𝑛) of the neuron, with the degree ofcombination controlled by the coefficient B
+        U = self.norm(U)
         return U
     
     #  ---------- Dynamic Threshold Subsystem ----------
@@ -155,10 +162,11 @@ class DPCN(nn.Module):
         aE = torch.clamp(self.aE, min=1e-6)         # ensure aE is non-negative and greater than 10^-6 (if its non-negative, it'll be more than one so it should remain a positive number)
         decay = torch.exp(-aE)                      # computes decay rate -- how much of E(n-1) we carry forward. Results in a scalar in from (0,1)
         E = (decay * E_prev) + (self.V_E * y_prev)  # updates the adaptive threshold using: decay term (ae) + growth term (V_e) proportional to previous output y (Y(n-1))
-        return E   
+        
         # ! IMPORTANT, GO BACK TO THIS LATER:: stable numerically, experiment with this later
         # grow  = (1.0 - decay) * self.V_E   
-        # E = decay * E_prev + grow * y_prev          
+        # E = decay * E_prev + grow * y_prev  
+        return E           
 
 
     # ---------- Activation Subsystem ----------
@@ -196,6 +204,7 @@ class DPCN(nn.Module):
 
         # run dpcn for the specified number of iterations
         for _ in range(self.iters):
+           #print(f"DPCN ITER: {_+1}/{self.iters}")
             # 1) Coupled linking: L(n)
             L = self.coupled_linking(y) # produce contextual map using deformable conv
 
@@ -218,6 +227,7 @@ class DPCN(nn.Module):
         # if we didn’t clamp each iteration, at least clamp the final output:
         if fov is not None and not self.clamp_each_iter:
             ys[-1] = y[-1] * fov
+            #y = y * fov
 
         # stack outputs along new dim: [N, T, C, H, W]
         ys = torch.stack(ys, dim=1)  

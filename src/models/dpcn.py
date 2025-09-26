@@ -163,7 +163,7 @@ class DPCN(nn.Module):
         iters: int = 3,
         beta: float = 0.5,
         aE: float = 0.5,
-        V_E: float = 1.0,
+        V_E: float = 1.0,   
         use_deformable: bool = True,
         project_out: bool = False,
         clamp_each_iter: bool = True,   # <-- add this for parity with VAT
@@ -193,19 +193,26 @@ class DPCN(nn.Module):
         y = torch.sigmoid(F)
         E = torch.zeros_like(F)
 
+        # collect outputs per iteration
+        ys = []    # will hold each Y(n) for n in [1..T]
+
         # Iterate once (no second loop!)
         for _ in range(self.iters):
+            print(f"DPCN ITER: {_+1}/{self.iters}")
             y, E = self.cell(y_prev=y, F=F, E_prev=E)
             # optional FOV clamp each step
             if fov is not None and self.clamp_each_iter:
                 y = y * fov
+            
+            ys.append(y)  # store current output
 
-        out = self.proj_out(y)
+        #out = self.proj_out(y)
 
         # If you didn't clamp each iteration, at least clamp final output
-        if fov is not None and not self.clamp_each_iter:
-            out = out * fov
+        # if fov is not None and not self.clamp_each_iter:
+        #     out = out * fov
 
-        return out
+        ys = torch.stack(ys, dim=1)  
+        return ys
 
 
