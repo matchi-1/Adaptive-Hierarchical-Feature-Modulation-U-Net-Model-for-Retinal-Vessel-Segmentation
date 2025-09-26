@@ -9,7 +9,7 @@ class DPCN(nn.Module):
         self.channels = channels or in_ch   # default: same channels as input
         self.iters = iters
 
-        # ---- Coupled Linking setup ----
+        # ---- 1.) Coupled Linking Subsystem Setup ----
 
         # (insert eq here later)
 
@@ -52,23 +52,23 @@ class DPCN(nn.Module):
         Returns:
             L: locally enhanced feature map, shape [N,C,H,W]
         """
-        # 1. predict offsets from Y(n-1)
+        # 1. predict offsets from Y(n-1) using normal Conv2d
         offsets = self.offset_conv(y_prev)  # [N,18,H,W]
 
         # 2. apply deformable conv
         L = deform_conv2d(
-            input=y_prev,
-            offset=offsets,
-            weight=self.weight,
-            bias=self.bias,
-            stride=1,
+            input=y_prev,  # Y(n-1) previous output
+            offset=offsets, # supplies all Δ𝑚, Δ𝑛 for the 9 taps of the kernel
+            weight=self.weight, # all learnable weights W(i,j) 
+            bias=self.bias, # learnable bias per output channel
+            stride=1,   # always 1 keep same spatial size 
             padding=1,
             dilation=1,
-            mask=None
+            mask=None  # no per-tap amplitude mask
         )
 
         # 3. normalization
-        L = self.norm(L)
+        L = self.norm(L) # stabilize activations
         return L
 
     def forward(self, x, fov=None):
