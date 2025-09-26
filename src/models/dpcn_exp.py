@@ -1,4 +1,3 @@
-i want to stay original first to the papers equations. but just change the way this is coded to be  the same as yours
 # src/models/dpcn_exp.py
 from typing import Optional
 import torch

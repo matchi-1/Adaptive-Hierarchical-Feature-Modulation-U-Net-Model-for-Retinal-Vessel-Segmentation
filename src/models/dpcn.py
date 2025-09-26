@@ -193,6 +193,10 @@ class DPCN(nn.Module):
         y = torch.sigmoid(F)
         E = torch.zeros_like(F)
 
+        # --- make fov safe (device + dtype) ---
+        if fov is not None:
+            fov = fov.to(y.device).type_as(y)
+
         # collect outputs per iteration
         ys = []    # will hold each Y(n) for n in [1..T]
 
