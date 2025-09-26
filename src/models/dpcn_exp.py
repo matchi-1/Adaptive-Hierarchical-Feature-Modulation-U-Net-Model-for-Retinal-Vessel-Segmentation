@@ -7,13 +7,13 @@ from torchvision.ops import deform_conv2d
 
 class DPCN(nn.Module):
     def __init__(self, 
-                 in_ch, 
-                 channels=None, 
-                 iters=3, 
-                 beta_init=0.5,
-                 aE=0.5,
-                 V_E=1.0,
-                 clamp_each_iter=True 
+                 in_ch,                 # number of input channels (should be 1 for grayscale input from preprocessing)
+                 channels=None,         # internal number of channels (if None, same as in_ch, but should be 32/64/128 for best results)
+                 iters=3,               # number of DPCN iterations (T)
+                 beta_init=0.5,         # initial value for learnable β (will be clamped to [0,1] at runtime)
+                 aE=0.5,                # decay constant for dynamic threshold subsystem
+                 V_E=1.0,               # growth scale for dynamic threshold subsystem
+                 clamp_each_iter=True   # whether to clamp output to FOV each iteration (True = clamp each iter, False = only final)
                  ):
         
         super().__init__()
