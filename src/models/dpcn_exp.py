@@ -191,6 +191,8 @@ class DPCN(nn.Module):
         y = torch.sigmoid(F)                               # reasonable Y(0) -- values are from 0 to 1 so initial "activity" is meaningful
         E = torch.zeros_like(F)                            # E(0)=0 -- no initial threshold
         
+        # collect outputs per iteration
+        ys = []    # will hold each Y(n) for n in [1..T]
 
         # run dpcn for the specified number of iterations
         for _ in range(self.iters):
@@ -211,8 +213,12 @@ class DPCN(nn.Module):
             if fov is not None and self.clamp_each_iter:
                 y = y * fov
 
+            ys.append(y)  # store current output
+
         # if we didn’t clamp each iteration, at least clamp the final output:
         if fov is not None and not self.clamp_each_iter:
-            y = y * fov
+            ys[-1] = y[-1] * fov
 
-        return y
+        # stack outputs along new dim: [N, T, C, H, W]
+        ys = torch.stack(ys, dim=1)  
+        return ys
