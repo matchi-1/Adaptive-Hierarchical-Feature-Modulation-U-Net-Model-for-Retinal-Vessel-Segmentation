@@ -3,11 +3,22 @@ import torch.nn as nn
 from torchvision.ops import deform_conv2d
 
 class DPCN(nn.Module):
-    def __init__(self, in_ch, channels=None, iters=3, beta_init=0.5):
+    def __init__(self, 
+                 in_ch, 
+                 channels=None, 
+                 iters=3, 
+                 beta_init=0.5,
+                 aE=0.5,
+                 V_E=1.0,
+                 use_deformable=True,
+                 clamp_each_iter=True 
+                 ):
+        
         super().__init__()
         self.in_ch = in_ch
         self.channels = channels or in_ch   # default: same channels as input (should be 32 / 64 / 128)
         self.iters = iters
+        self.clamp_each_iter = clamp_each_iter
 
         # ---- project input to internal channels once; F(n) will reuse this ----
         # if in_ch == channels, just use identity (no extra cost or no op)
@@ -84,19 +95,31 @@ class DPCN(nn.Module):
         L = self.norm(L) # stabilize activations
         return L
     
-    # -------- Feeding Input: F(n) = I_OR ----------
+    # -------- Feeding Input Subsystem: F(n) = I_OR ----------
     # In practice we build F once from x (projection) and reuse it every iteration.
     def feeding_input(self, x):
         # x is the original shallow feature (or preprocessed image), shape [N, C_in, H, W]
         F = self.proj_in(x)  # [N, channels, H, W]
         return F
 
-    # -------- Modulation: U(n) = F(n) * (1 + β * L(n)) ----------
+    # -------- Modulation Subsystem: U(n) = F(n) * (1 + β * L(n)) ----------
     def modulation(self, F, L):
         beta = torch.clamp(self.beta, 0.0, 1.0)  # keep β in a sane range so modulation doesn’t blow up or flip signs
         U = F * (1.0 + beta * L)                 # formula for modulation. states of the feeding units and linking units combine in a second-order manner to produce the internal state 𝑈(𝑛) of the neuron, with the degree ofcombination controlled by the coefficient B
         return U
+    
+    #  ---------- Dynamic Threshold Subsystem ----------
+    # E(n) = exp(-aE) * E(n-1) + (1 - exp(-aE)) * V_E * Y(n-1)
+    def update_threshold(self, E_prev: torch.Tensor, y_prev: torch.Tensor) -> torch.Tensor:
+        # keep exp argument non-negative to avoid overflow on weird aE
+        aE = torch.clamp(self.aE, min=1e-6)
+        decay = torch.exp(-aE)                             # scalar in (0,1)
+        grow  = (1.0 - decay) * self.V_E                  # scalar
+        return decay * E_prev + grow * y_prev             # all broadcast over [N,C,H,W]
 
+    # ---------- Activation Subsystem: Y(n) = sigmoid( U(n) - E(n) ) ----------
+    def activate(self, U: torch.Tensor, E: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(U - E)
 
     def forward(self, x, fov=None):
         """
