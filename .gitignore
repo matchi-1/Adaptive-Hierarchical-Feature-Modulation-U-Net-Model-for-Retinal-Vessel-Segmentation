@@ -12,3 +12,8 @@ __pycache__/
 data/CHASEDB1
 data/DRIVE
 data/STARE
+
+#pth files
+*.pth
+*.pt
+notebooks/runs/
