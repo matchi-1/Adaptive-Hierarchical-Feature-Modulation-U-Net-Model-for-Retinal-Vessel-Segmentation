@@ -57,7 +57,6 @@ class FundusSegDataset(Dataset):
             clahe_tiles=clahe_tiles,
             apply_fov=False,          # IMPORTANT: FOV is applied AFTER preprocessing
             mask_path=None,
-            auto_discover_mask=False,
         )
 
     # tells PyTorch how many samples the dataset has (for indexing, batching)

@@ -10,7 +10,7 @@ from torchvision.ops import deform_conv2d
 #     raise RuntimeError("This build of torchvision lacks deform_conv2d. Install matching torch/vision wheels.")
 
 # add docstring here on dpcn including all formulas
-print("has op:", hasattr(torch.ops.torchvision, "deform_conv2d"))
+#print("has op:", hasattr(torch.ops.torchvision, "deform_conv2d"))
 
 # Hard-require deformable conv
 if not hasattr(torch.ops.torchvision, "deform_conv2d"):
@@ -290,7 +290,7 @@ class DPCN(nn.Module):
         Vconf = self.vconf_branch(x).to(y.device).type_as(y)  # [N,1,H,W]
         Vconf = Vconf.to(y.device).type_as(y)
         
-        print("Vconf:", Vconf.shape, float(Vconf.min()), float(Vconf.max()))
+        #print("Vconf:", Vconf.shape, float(Vconf.min()), float(Vconf.max()))
 
         if fov is not None:
             # keep Vconf zero outside retina to avoid spurious growth
