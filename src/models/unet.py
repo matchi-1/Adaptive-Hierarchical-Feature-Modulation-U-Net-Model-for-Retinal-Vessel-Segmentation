@@ -59,9 +59,9 @@ class DecoderBlock(nn.Module):
         return x
 
 class UNet(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels = 1):
         super().__init__()
-        self.e1 = EncoderBlock(1, 64)
+        self.e1 = EncoderBlock(in_channels, 64)
         self.e2 = EncoderBlock(64, 128)
         self.e3 = EncoderBlock(128, 256)
         self.e4 = EncoderBlock(256, 512)

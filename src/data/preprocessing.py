@@ -108,8 +108,7 @@ def preprocess_image_retina(path: str,
                             use_gamma: bool = True, gamma: float = 0.9,
                             clahe_clip: float = 2.0, clahe_tiles: int = 8,
                             apply_fov: bool = True,
-                            mask_path: str | None = None,
-                            auto_discover_mask: bool = True) -> np.ndarray:
+                            mask_path: str | None = None): #auto_discover_mask: bool = True) -> np.ndarray
     
 
     bgr = cv2.imread(path, cv2.IMREAD_COLOR)               # load image as BGR uint8

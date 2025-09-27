@@ -124,15 +124,15 @@ class ChannelGate(nn.Module):
     def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max']):
         super(ChannelGate, self).__init__()
         self.gate_channels = gate_channels
-
+        hidden = max(1, gate_channels // reduction_ratio)  # prevent zero because C/r with small C and large r this can be <1 = 0
 
         # shared MLP: 
         # (B,C,1,1) -> Flatten (B,C) -> Linear(C->C/r) -> ReLU -> Linear(C/r->C) -> (B,C)
         self.mlp = nn.Sequential(
             Flatten(),
-            nn.Linear(gate_channels, gate_channels // reduction_ratio),
+            nn.Linear(gate_channels, hidden),
             nn.ReLU(),
-            nn.Linear(gate_channels // reduction_ratio, gate_channels)
+            nn.Linear(hidden, gate_channels)
         )
 
         # types of pooling to use
@@ -251,7 +251,7 @@ class SpatialGate(nn.Module):
         x_out = self.spatial(x_compress) # uses BasicConv() without ReLU
 
         # applies σ
-        scale = F.sigmoid(x_out)  # spatial weights in (0,1)
+        scale = torch.sigmoid(x_out)  # spatial weights in (0,1)
 
         # applies ⊗ F'
         return x * scale # multiply input by spatial map (broadcast across channels)
