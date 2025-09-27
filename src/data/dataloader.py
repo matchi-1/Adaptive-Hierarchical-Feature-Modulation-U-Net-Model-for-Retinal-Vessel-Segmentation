@@ -11,6 +11,18 @@ from src.data.dataset import FundusSegDataset
 from src.data.prepare_dataset import _natural_key
 
 
+def seed_worker(worker_id: int):
+    # PyTorch provides each worker a base seed via worker_info.seed
+    worker_info = torch.utils.data.get_worker_info()
+    # Make a NumPy/py random seed from it
+    base_seed = worker_info.seed % 2**32
+    np.random.seed(base_seed)
+    try:
+        import random
+        random.seed(base_seed)
+    except Exception:
+        pass
+
 
 def pair_paths(images_dir: str, labels_dir: str) -> List[Tuple[str, str]]:
     """
@@ -33,6 +45,7 @@ def pair_paths(images_dir: str, labels_dir: str) -> List[Tuple[str, str]]:
 
 # takes in a base random see + returns an inner function (_fn) that PyTorch’s DataLoader can call when each worker process starts
 # in DataLoader, "workers" are multiple worker processes (subprocesses) that loads and preprocesses data in parallel and package them and send them back to the main processes
+
 def _worker_seed_init(base_seed: int):
     def _fn(worker_id: int):  # every worker process (like worker 0, worker 1, …) gets its own worker_id
         np.random.seed(base_seed + worker_id) # seed is set as base_seed + worker_id
@@ -89,16 +102,26 @@ def make_loaders(
     )
 
     # call helper func to create seed for each worker process
-    worker_init = _worker_seed_init(seed)
+    worker_init = _worker_seed_init # seed_worker  
 
     # build dataloaders
     train_loader = DataLoader(
-        trn, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-        pin_memory=True, drop_last=False, worker_init_fn=worker_init
+        trn,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        worker_init_fn=worker_init
     )
     val_loader = DataLoader(
-        val, batch_size=batch_size, shuffle=False, num_workers=num_workers,
-        pin_memory=True, drop_last=False, worker_init_fn=worker_init
+        val,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=False,
+        worker_init_fn=worker_init
     )
 
     # returns training and validation dataloaders
