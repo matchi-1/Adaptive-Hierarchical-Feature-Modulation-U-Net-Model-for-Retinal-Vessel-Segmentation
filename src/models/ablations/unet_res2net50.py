@@ -201,12 +201,12 @@ class Res2NetEncoder(nn.Module):
 
 class UNet_Res2Net50(nn.Module):
     """
-    U-Net that uses Res2Net-50 as the encoder (OS=16) and your decoder.
+    U-Net that uses Res2Net-50 as the encoder (OS=16) and decoder.
 
     • Encoder: returns C1..C5 (64/256/512/1024/2048 ch at H, H/2, H/4, H/8, H/16).
-    • Lateral 1×1 "adapters": shrink encoder channels to match your decoder plan
+    • Lateral 1×1 "adapters": shrink encoder channels to match decoder plan
       (64, 128, 256, 512 for skips; 1024 for bottleneck).
-    • Decoder: your four DecoderBlocks (×2 upsample) bring H/16 → H.
+    • Decoder: four DecoderBlocks (×2 upsample) bring H/16 → H.
 
     Args:
         in_ch (int): input channels (1 or 3)
@@ -225,7 +225,7 @@ class UNet_Res2Net50(nn.Module):
         self.lat4 = nn.Conv2d( 1024,  512, kernel_size=1)   # C4 → 512
         self.latb = nn.Conv2d( 2048, 1024, kernel_size=1)   # C5 → 1024
 
-        # Your decoder (unchanged)
+        # UNet decoder (unchanged)
         self.d1 = DecoderBlock(1024, 512)  # H/16 -> H/8
         self.d2 = DecoderBlock( 512, 256)  # H/8  -> H/4
         self.d3 = DecoderBlock( 256, 128)  # H/4  -> H/2

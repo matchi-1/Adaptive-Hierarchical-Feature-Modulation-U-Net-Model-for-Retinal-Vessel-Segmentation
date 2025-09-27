@@ -46,8 +46,13 @@ class Bottle2neck(nn.Module):
     # keeps the standard ResNet bottleneck structure
     # the block’s output has 4× planes channels
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, 
-                 baseWidth=26, scale=4, stype='normal'):
+    def __init__(self, 
+                 inplanes, 
+                 planes, 
+                 stride=1, 
+                 downsample=None, 
+                 baseWidth=26, 
+                 scale=4, stype='normal'):
         super(Bottle2neck, self).__init__()
 
         # Per-paper width calculation and 1×1 "reduce": channel = s * width. 
@@ -298,3 +303,7 @@ class Res2Net(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
+
+
+
+# model = Res2Net(Bottle2neck, [3, 4, 6, 3], baseWidth = 26, scale = 4, **kwargs)

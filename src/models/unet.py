@@ -27,15 +27,35 @@ class EncoderBlock(nn.Module):
         return x, p
 
 class DecoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    """2× upsample (transpose conv) + concat with skip + ConvBlock."""
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
+        
+        # up: in_channels -> out_channels, spatial ×2
         self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
+        
+        # after concat with skip (out_channels + out_channels)
         self.conv = ConvBlock(out_channels * 2, out_channels)
 
-    def forward(self, x, skip):
-        x = self.up(x)
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        # x: decoder feature from the previous (deeper) level
+        # skip: encoder feature at the corresponding scale
+        
+        x = self.up(x) # 2× spatial upsample + channel projection to out_channels
+        
+        # Due to pooling/upsampling integer rounding, shapes can drift by 1px
+        # handle odd/even shapes due to pooling artifacts
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
+        
+        # Channel-wise concatenate: [N, out_channels, H, W] + [N, out_channels, H, W]
+        # → [N, 2*out_channels, H, W]
         x = torch.cat([x, skip], dim=1)
+        
+        # Fuse the concatenated features with two 3×3 convs (BN+ReLU inside ConvBlock),
+        # bringing channels back down to `out_channels`.
         x = self.conv(x)
+        
         return x
 
 class UNet(nn.Module):
