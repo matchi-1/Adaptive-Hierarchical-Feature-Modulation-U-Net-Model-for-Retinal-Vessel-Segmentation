@@ -13,7 +13,7 @@ from src.models.unet import ConvBlock
 
 class Align1x1(nn.Module):
     """Channel alignment using 1x1 conv with optional resize.
-    
+
     Args:
         in_ch: Input channels.
         out_ch: Desired output channels.
@@ -24,7 +24,7 @@ class Align1x1(nn.Module):
 
     def forward(self, x: torch.Tensor, size_hw: Tuple[int, int]) -> torch.Tensor:
         """Resizes spatially and aligns channels.
-        
+
         Args:
             x: Feature map [B, C, H, W].
             size_hw: Target (H, W).
@@ -38,7 +38,7 @@ class Align1x1(nn.Module):
 
 class DecoderStage(nn.Module):
     """One decoder stage that upsamples and fuses multiple inputs.
-    
+
     Args:
         in_up_ch: Channels entering from the deeper decoder.
         fuse_in_chs: List of channel counts for extra inputs to concatenate.
@@ -52,7 +52,7 @@ class DecoderStage(nn.Module):
 
     def forward(self, x_up: torch.Tensor, *to_concat: torch.Tensor) -> torch.Tensor:
         """Fuses upsampled decoder feature with auxiliary inputs.
-        
+
         Args:
             x_up: Feature from previous decoder stage [B, in_up_ch, H, W].
             *to_concat: Extra tensors aligned to the post-upsample size, each [B, C_i, H, W].
@@ -77,7 +77,7 @@ class DecoderStage(nn.Module):
 
 class HybridUNetMDFI(nn.Module):
     """U-Net decoder with Res2Net encoder, CBAM, HAS-Skip, and 6-MSU pyramid.
-    
+
     Wiring:
       Encoders: backbone returns [E1..E4].
       CBAM at each encoder: E'i = CBAM(Ei).
@@ -89,7 +89,7 @@ class HybridUNetMDFI(nn.Module):
         D2: up(D1), E2', M2, M5, HAS_2
         D1: up(BN),  E1', M1, M4, M6, HAS_1
       CBAM outputs are always concatenated at their matching decoder level.
-    
+
     Args:
         backbone: Module returning 4 feature maps in forward(), with .out_channels list[int].
         in_channels: Input image channels.
@@ -102,7 +102,7 @@ class HybridUNetMDFI(nn.Module):
     def __init__(
         self,
         backbone: nn.Module,
-        in_channels: int = 3,
+        in_channels: int = 1,
         dec_channels: List[int] = (512, 256, 128, 64),
         out_channels: int = 1,
         msu_mid_channels: int = 64,
@@ -133,7 +133,7 @@ class HybridUNetMDFI(nn.Module):
         self.msu_align_e2_to_e1 = Align1x1(self.enc_out_chs[1], self.enc_out_chs[0])  # 512→256
         self.msu_align_e3_to_e2 = Align1x1(self.enc_out_chs[2], self.enc_out_chs[1])  # 1024→512
         self.msu_align_e4_to_e3 = Align1x1(self.enc_out_chs[3], self.enc_out_chs[2])  # 2048→1024
-        
+
 
         self.msu_e1e2 = MSU(self.enc_out_chs[0], msu_mid_channels)
         self.msu_e2e3 = MSU(self.enc_out_chs[1], msu_mid_channels)
@@ -174,24 +174,24 @@ class HybridUNetMDFI(nn.Module):
         self.has1 = HASSkip(self.enc_out_chs, 128, 64, **has_cfg)
 
         self.dec4 = DecoderStage(
-            in_up_ch=dec_channels[0],
-            fuse_in_chs=[dec_channels[-4], dec_channels[-4]],
-            out_ch=dec_channels[0],
+            in_up_ch=dec_channels[0],                     # b → 512
+            fuse_in_chs=[dec_channels[0], dec_channels[0]],
+            out_ch=dec_channels[0],                       # 512
         )
         self.dec3 = DecoderStage(
-            in_up_ch=dec_channels[1],
-            fuse_in_chs=[dec_channels[-3], dec_channels[-3], dec_channels[-3]],
-            out_ch=dec_channels[1],
+            in_up_ch=dec_channels[0],                     # d4 is 512
+            fuse_in_chs=[dec_channels[1], dec_channels[1], dec_channels[1]],
+            out_ch=dec_channels[1],                       # 256
         )
         self.dec2 = DecoderStage(
-            in_up_ch=dec_channels[2],
-            fuse_in_chs=[dec_channels[-2], dec_channels[-2], dec_channels[-2], dec_channels[-2]],
-            out_ch=dec_channels[2],
+            in_up_ch=dec_channels[1],                     # d3 is 256
+            fuse_in_chs=[dec_channels[2], dec_channels[2], dec_channels[2], dec_channels[2]],
+            out_ch=dec_channels[2],                       # 128
         )
         self.dec1 = DecoderStage(
-            in_up_ch=dec_channels[3],
-            fuse_in_chs=[dec_channels[-1], dec_channels[-1], dec_channels[-1], dec_channels[-1], dec_channels[-1]],
-            out_ch=dec_channels[3],
+            in_up_ch=dec_channels[2],                     # d2 is 128
+            fuse_in_chs=[dec_channels[3], dec_channels[3], dec_channels[3], dec_channels[3], dec_channels[3]],
+            out_ch=dec_channels[3],                       # 64
         )
 
         self.bottleneck = ConvBlock(self.enc_out_chs[3], dec_channels[0])
@@ -199,7 +199,7 @@ class HybridUNetMDFI(nn.Module):
 
     def _run_cbam(self, e_list: List[torch.Tensor]) -> List[torch.Tensor]:
         """Applies CBAM to each encoder output.
-        
+
         Args:
             e_list: List of 4 tensors [E1..E4].
         Returns:
@@ -209,7 +209,7 @@ class HybridUNetMDFI(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
-        
+
         Args:
             x: Input image tensor [B, C, H, W].
         Returns:
