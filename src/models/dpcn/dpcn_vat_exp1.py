@@ -35,12 +35,13 @@ class DPCNIter(nn.Module):
     Shapes are all [N, C, H, W].
     """
 
-    def __init__(self, channels: int, beta: float, aE: float, V_E: float):
+    def __init__(self, channels: int, beta: float, aE: float, V_E: float, threshold_mode: str = "vat"):
         super().__init__()
         self.channels = channels
+        self.threshold_mode = threshold_mode
 
-        # β, aE, V_E as hyperparams (frozen to match your latest code)
-        self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
+        # β, aE, V_E as hyperparams (frozen rn, revisit later if we want to make them learnable parameters) 
+        self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # scalar parameter (hyperparam) controls how much linking affects modulation
         self.aE  = nn.Parameter(torch.tensor(float(aE)),   requires_grad=False)   # decay constant (hyperparam) - how fast the threshold decays
         self.V_E = nn.Parameter(torch.tensor(float(V_E)),  requires_grad=False)   # growth scale (hyperparam) - how much the last activation raises the threshold
 
@@ -74,10 +75,10 @@ class DPCNIter(nn.Module):
         self.bias   = nn.Parameter(torch.zeros(channels)) # add bias term per output channel ; after summing all taps, add bias
 
         # normalization (helps stability)
-        self.norm_L = nn.BatchNorm2d(channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
+        self.norm_L = nn.GroupNorm(8, channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
 
         # optional norm on U(n) to stabilize multiplicative modulation
-        self.norm_U = nn.BatchNorm2d(channels)
+        self.norm_U = nn.GroupNorm(8, channels)
 
     # -------- Coupled Linking Subsystem ----------
     """
@@ -91,7 +92,7 @@ class DPCNIter(nn.Module):
     Returns:
         L: locally enhanced feature map, shape [N,C,H,W]
     """
-    def forward(self, y_prev: torch.Tensor, F: torch.Tensor, E_prev: torch.Tensor, Vconf: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, y_prev: torch.Tensor, F: torch.Tensor, E_prev: torch.Tensor, Vconf: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         # 1. predict offsets from Y(n-1) using normal Conv2d
         offsets = self.offset_conv(y_prev)  # [N,18,H,W]
 
@@ -127,28 +128,8 @@ class DPCNIter(nn.Module):
         U = self.norm_U(U)
 
         #  ---------- Dynamic Threshold Subsystem ----------
-        """
-        Dynamic Threshold Subsystem
-        E(n) = e^(-aE) * E(n-1) + V_E * Y(n-1)
-
-
-        Args:
-            E_prev: previous threshold E(n-1)
-            y_prev: previous output Y(n-1)
-        Variables:
-            aE: decay constant (hyperparam) - how fast the threshold decays
-            V_E: growth scale (hyperparam) - how much the last activation raises the threshold
-        Returns:
-            U: modulated internal state controlled by β (combining feeding and linking)
-        """
-        # keep exp argument non-negative to avoid overflow on weird aE
-        aE = torch.clamp(self.aE, min=1e-6)
-        decay = torch.exp(-aE)                     # e^(−aE)
-        # Vessel-aware: E(n) = e^(−aE) * E(n−1) + V_E * ( Y(n−1) · Vconf )
-        # use 'grow' variant if you prefer: grow = (1−decay) * V_E
-        grow  = (1.0 - decay) * self.V_E
-        # Vconf is [N,1,H,W]; broadcast to channels
-        E = decay * E_prev + grow * (y_prev * Vconf)
+        E = self._update_threshold(E_prev=E_prev, y_prev=y_prev, Vconf=Vconf)
+        
 
         # ---------- Activation Subsystem ----------
         """
@@ -164,6 +145,74 @@ class DPCNIter(nn.Module):
         """
         y = torch.sigmoid(U - E) # Y(n): subtract the threshold from the modulated input -- only inputs above the threshold will pass strongly; squashed to [0,1] range using sigmoid
         return y, E
+    
+    # -------- Dynamic Threshold Subsystem (SWITCHABLE method) ----------
+    def _update_threshold(self,
+                      E_prev: torch.Tensor,
+                      y_prev: torch.Tensor,
+                      Vconf: Optional[torch.Tensor]) -> torch.Tensor:
+        
+        """
+        Dynamic Threshold Subsystem (switchable)
+
+        Computes the adaptive threshold E(n) from the previous threshold and activity.
+        The exact update rule depends on `threshold_mode`:
+
+            - "paper":
+                E(n) = exp(-aE) * E(n-1) + V_E * Y(n-1)
+            
+            - "paper_mod":
+                E(n) = exp(-aE) * E(n-1) + (1 - exp(-aE)) * V_E * Y(n-1)
+
+            - "vat" (vessel-aware thresholding):
+                E(n) = exp(-aE) * E(n-1) + V_E * ( Y(n-1) ⊙ Vconf )
+                where Vconf ∈ [0,1] is a vessel-confidence map broadcast over channels.
+
+            - "scaled_vat":
+                E(n) = exp(-aE) * E(n-1) + (1 - exp(-aE)) * V_E * ( Y(n-1) ⊙ Vconf )
+
+        Args:
+            E_prev (Tensor): Previous threshold E(n-1), shape [N, C, H, W].
+            y_prev (Tensor): Previous activation/output Y(n-1), shape [N, C, H, W].
+            Vconf (Optional[Tensor]): Vessel-confidence map, shape [N, 1, H, W].
+                Required for modes "vat" and "scaled_vat"; ignored in "paper" mode.
+
+        Hyperparameters:
+            aE (float): Non-negative decay constant controlling how fast E decays.
+            V_E (float): Growth scale controlling how strongly the last activation raises E.
+
+        Behavior:
+            decay = exp(-aE) ∈ (0,1). Larger aE ⇒ faster decay.
+            In "vat"/"scaled_vat", Y(n-1) is modulated by Vconf to increase thresholds
+            primarily where vessels are likely.
+
+        Returns:
+            Tensor: Current threshold E(n), shape [N, C, H, W].
+        """
+
+        
+        aE  = torch.clamp(self.aE, min=1e-6) # ensure aE is non-negative and greater than 10^-6 (if its non-negative, it'll be more than one so it should remain a positive number)
+        V_E = self.V_E
+        decay = torch.exp(-aE) # computes decay rate -- how much of E(n-1) we carry forward. Results in a scalar in from (0,1)
+
+        mode = self.threshold_mode.lower()
+        if mode == "paper":
+            grow_term = V_E * y_prev
+        elif mode == "paper_mod":
+            grow_term = (1.0 - decay) * V_E * y_prev
+        elif mode == "vat":
+            if Vconf is None:
+                raise ValueError("Vconf is required for 'vat' mode.")
+            grow_term = V_E * (y_prev * Vconf)   # broadcast Vconf [N,1,H,W] → [N,C,H,W]
+        elif mode == "scaled_vat":
+            if Vconf is None:
+                raise ValueError("Vconf is required for 'scaled_vat' mode.")
+            grow_term = (1.0 - decay) * V_E * (y_prev * Vconf)
+        else:
+            raise ValueError(f"Unknown threshold_mode: {self.threshold_mode}")
+
+        return decay * E_prev + grow_term
+
 
 
 class DPCN(nn.Module):
@@ -182,12 +231,14 @@ class DPCN(nn.Module):
         V_E: float = 1.0,
         clamp_each_iter: bool = True,
         project_out: bool = False,
+        threshold_mode: str = "scaled_vat"  # "paper", "paper_mod", "vat", "scaled_vat"
     ):
         super().__init__()
         channels = channels or in_ch
         self.iters = int(iters)
         self.channels = channels
         self.clamp_each_iter = clamp_each_iter
+        self.threshold_mode = threshold_mode
 
         # ---- project input to internal channels once; F(n) will reuse this ----
         # if in_ch == channels, just use identity (no extra cost or no op)
@@ -218,6 +269,7 @@ class DPCN(nn.Module):
             beta=beta_init,
             aE=aE,
             V_E=V_E,
+            threshold_mode=threshold_mode
         )
 
     # -------- Feeding Input Subsystem: F(n) = I_OR ----------
@@ -241,7 +293,7 @@ class DPCN(nn.Module):
 
         # --- Vessel Confidence Map (computed once) ---
         # by default from raw input x; switch to F if you prefer feature-space confidence
-        Vconf = self.vconf_branch(x)                     # [N,1,H,W], values in [0,1]
+        Vconf = self.vconf_branch(x).to(y.device).type_as(y)  # [N,1,H,W]
         Vconf = Vconf.to(y.device).type_as(y)
         
         print("Vconf:", Vconf.shape, float(Vconf.min()), float(Vconf.max()))
@@ -259,9 +311,9 @@ class DPCN(nn.Module):
 
         # run dpcn for the specified number of iterations
         for _ in range(self.iters):
-            print(f"DPCN ITER_exp1: {_+1}/{self.iters}")
+            #print(f"DPCN ITER_exp1: {_+1}/{self.iters}")
             # 1) Coupled linking: L(n) + 2) Modulation + 3) Dynamic threshold + 4) Activation
-            y, E = self.cell(y_prev=y, F=F, E_prev=E, Vconf=Vconf) # produce contextual map using deformable conv; combines raw intensity input F with contextual link L + controlled by learnable β; updates the adaptive threshold; squashes to [0,1] range using sigmoid
+            y, E = self.cell(y_prev=y, F=F, E_prev=E, Vconf=Vconf if self.threshold_mode != "paper" and self.threshold_mode != "paper_mod" else None) # produce contextual map using deformable conv; combines raw intensity input F with contextual link L + controlled by learnable β; updates the adaptive threshold; squashes to [0,1] range using sigmoid
 
             # 5) FOV clamp each step (keeps state zero outside retina)
             if fov is not None and self.clamp_each_iter:
@@ -269,7 +321,7 @@ class DPCN(nn.Module):
 
             ys.append(y)  # store current output
 
-            print("E stats:", float(E.mean()), float(E.std()))
+            #print("E stats:", float(E.mean()), float(E.std()))
 
 
         # if we didn’t clamp each iteration, at least clamp the final output:

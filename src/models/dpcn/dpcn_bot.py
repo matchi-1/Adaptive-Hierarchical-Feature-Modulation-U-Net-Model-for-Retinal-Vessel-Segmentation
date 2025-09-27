@@ -86,7 +86,7 @@ class DPCNIter(nn.Module):
         beta: float = 0.5,            # trade-off feeding vs linking
         aE: float = 0.5,              # decay rate; higher -> faster decay
         V_E: float = 1.0,             # growth scale from previous Y
-        use_deformable: bool = True   # try to use deformable conv if available
+        clamp_each_iter: bool = True
     ):
         super().__init__()
         self.channels = channels
@@ -102,9 +102,7 @@ class DPCNIter(nn.Module):
         self.offset_conv = nn.Conv2d(channels, off_ch, kernel_size=3, padding=1)
 
         # deformable (or plain) 3x3 conv produces L(n)
-        self.link_conv = _DeformableConv2dOrConv2d(channels, channels, kernel_size=3, bias=True) \
-                         if (use_deformable and _HAS_TV_DEFORM) else \
-                         _DeformableConv2dOrConv2d(channels, channels, kernel_size=3, bias=True)
+        self.link_conv = _DeformableConv2dOrConv2d(channels, channels, kernel_size=3, bias=True) 
 
         # mild normalization on L(n) to stabilize (optional but helpful)
         self.norm = nn.BatchNorm2d(channels)
@@ -148,7 +146,7 @@ class DPCNIter(nn.Module):
     Full DPCN block that runs T iterations on shallow features.
 
     Usage:
-      dpcn = DPCN(in_ch=1, iters=4, beta=0.5, aE=0.5, V_E=1.0, use_deformable=True)
+      dpcn = DPCN(in_ch=1, iters=4, beta=0.5, aE=0.5, V_E=1.0)
       y = dpcn(x)  # x: (N, C=1, H, W) -> (N, C=1, H, W)
 
     Notes:
@@ -162,10 +160,9 @@ class DPCN(nn.Module):
         in_ch: int,
         channels: Optional[int] = None,
         iters: int = 3,
-        beta: float = 0.5,
+        beta_init: float = 0.5,
         aE: float = 0.5,
         V_E: float = 1.0,   
-        use_deformable: bool = True,
         project_out: bool = False,
         clamp_each_iter: bool = True,   # <-- add this for parity with VAT
     ):
@@ -180,10 +177,9 @@ class DPCN(nn.Module):
 
         self.cell = DPCNIter(
             channels=channels,
-            beta=beta,
+            beta=beta_init,
             aE=aE,
             V_E=V_E,
-            use_deformable=use_deformable
         )
 
     def forward(self, x: torch.Tensor, fov: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -203,7 +199,7 @@ class DPCN(nn.Module):
 
         # Iterate once (no second loop!)
         for _ in range(self.iters):
-            print(f"DPCN ITER: {_+1}/{self.iters}")
+            #print(f"DPCN ITER: {_+1}/{self.iters}")
             y, E = self.cell(y_prev=y, F=F, E_prev=E)
             # optional FOV clamp each step
             if fov is not None and self.clamp_each_iter:

@@ -38,7 +38,7 @@ class DPCNIter(nn.Module):
         super().__init__()
         self.channels = channels
 
-        # β, aE, V_E as hyperparams (frozen to match your latest code)
+        # β, aE, V_E as hyperparams (frozen rn, revisit later if we want to make them learnable parameters)
         self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # learnable scalar parameter, will receive gradients and be updated by the optimizer during training
         self.aE  = nn.Parameter(torch.tensor(float(aE)),   requires_grad=False)   # decay constant (hyperparam) - how fast the threshold decays
         self.V_E = nn.Parameter(torch.tensor(float(V_E)),  requires_grad=False)   # growth scale (hyperparam) - how much the last activation raises the threshold
@@ -231,7 +231,7 @@ class DPCN(nn.Module):
 
         # run dpcn for the specified number of iterations
         for _ in range(self.iters):
-            print(f"DPCN ITER_exp1: {_+1}/{self.iters}")
+            #print(f"DPCN ITER_exp1: {_+1}/{self.iters}")
             # 1) Coupled linking: L(n) + 2) Modulation + 3) Dynamic threshold + 4) Activation
             y, E = self.cell(y_prev=y, F=F, E_prev=E)  # produce contextual map using deformable conv; combines raw intensity input F with contextual link L + controlled by learnable β; updates the adaptive threshold; squashes to [0,1] range using sigmoid
 
