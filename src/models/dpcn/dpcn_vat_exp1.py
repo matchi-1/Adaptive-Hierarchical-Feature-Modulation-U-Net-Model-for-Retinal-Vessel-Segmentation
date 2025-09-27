@@ -75,27 +75,31 @@ class DPCNIter(nn.Module):
         self.bias   = nn.Parameter(torch.zeros(channels)) # add bias term per output channel ; after summing all taps, add bias
 
         # normalization (helps stability)
-        self.norm_L = nn.GroupNorm(8, channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
+        self.norm_L = nn.BatchNorm2d(channels)
+        #self.norm_L = nn.GroupNorm(8, channels) # convs can produce large values, batchnorm re-centers and rescales each channel to have mean=0, std=1 (per batch)
 
         # optional norm on U(n) to stabilize multiplicative modulation
-        self.norm_U = nn.GroupNorm(8, channels)
+        self.norm_U = nn.BatchNorm2d(channels)
+        #self.norm_U = nn.GroupNorm(8, channels)
 
-    # -------- Coupled Linking Subsystem ----------
-    """
-    Coupled Linking Subsystem:
-    L(n) = DefConv(Y(n-1))
-    TODO: add expounded formula here
-
-
-    Args:
-        y_prev: previous iteration output Y(n-1), shape [N,C,H,W]
-    Returns:
-        L: locally enhanced feature map, shape [N,C,H,W]
-    """
+    
     def forward(self, y_prev: torch.Tensor, F: torch.Tensor, E_prev: torch.Tensor, Vconf: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         # 1. predict offsets from Y(n-1) using normal Conv2d
         offsets = self.offset_conv(y_prev)  # [N,18,H,W]
 
+
+        # -------- Coupled Linking Subsystem ----------
+        """
+        Coupled Linking Subsystem:
+        L(n) = DefConv(Y(n-1))
+        TODO: add expounded formula here
+
+
+        Args:
+            y_prev: previous iteration output Y(n-1), shape [N,C,H,W]
+        Returns:
+            L: locally enhanced feature map, shape [N,C,H,W]
+        """
         # 2. apply deformable conv
         L = deform_conv2d(
             input=y_prev,  # Y(n-1) previous output
@@ -128,30 +132,6 @@ class DPCNIter(nn.Module):
         U = self.norm_U(U)
 
         #  ---------- Dynamic Threshold Subsystem ----------
-        E = self._update_threshold(E_prev=E_prev, y_prev=y_prev, Vconf=Vconf)
-        
-
-        # ---------- Activation Subsystem ----------
-        """
-        Activation Subsystem
-        Y(n) = sigmoid( U(n) - E(n) )
-
-
-        Args:
-            U: modulated input from modulation subsystem
-            E: current threshold from dynamic threshold subsystem
-        Returns:
-            Y: subtracted and squashed output
-        """
-        y = torch.sigmoid(U - E) # Y(n): subtract the threshold from the modulated input -- only inputs above the threshold will pass strongly; squashed to [0,1] range using sigmoid
-        return y, E
-    
-    # -------- Dynamic Threshold Subsystem (SWITCHABLE method) ----------
-    def _update_threshold(self,
-                      E_prev: torch.Tensor,
-                      y_prev: torch.Tensor,
-                      Vconf: Optional[torch.Tensor]) -> torch.Tensor:
-        
         """
         Dynamic Threshold Subsystem (switchable)
 
@@ -189,7 +169,6 @@ class DPCNIter(nn.Module):
         Returns:
             Tensor: Current threshold E(n), shape [N, C, H, W].
         """
-
         
         aE  = torch.clamp(self.aE, min=1e-6) # ensure aE is non-negative and greater than 10^-6 (if its non-negative, it'll be more than one so it should remain a positive number)
         V_E = self.V_E
@@ -211,8 +190,23 @@ class DPCNIter(nn.Module):
         else:
             raise ValueError(f"Unknown threshold_mode: {self.threshold_mode}")
 
-        return decay * E_prev + grow_term
+        E = decay * E_prev + grow_term
 
+
+        # ---------- Activation Subsystem ----------
+        """
+        Activation Subsystem
+        Y(n) = sigmoid( U(n) - E(n) )
+
+
+        Args:
+            U: modulated input from modulation subsystem
+            E: current threshold from dynamic threshold subsystem
+        Returns:
+            Y: subtracted and squashed output
+        """
+        y = torch.sigmoid(U - E) # Y(n): subtract the threshold from the modulated input -- only inputs above the threshold will pass strongly; squashed to [0,1] range using sigmoid
+        return y, E  
 
 
 class DPCN(nn.Module):
