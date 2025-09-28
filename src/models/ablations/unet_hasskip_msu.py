@@ -131,7 +131,7 @@ class UNet_HASSkip_MSU(nn.Module):
         # Minimal set for single-neighbor policy:
         self.align_e3_to_d1 = Align1x1(C3, D1)  # for MSU at d1: E4 vs E3
         self.align_e4_to_d2 = Align1x1(C4, D2)  # for MSU at d2: E3 vs E4
-        self.align_e1_to_d3 = Align1x1(C1, D3)  # for MSU at d3: E2 vs E1
+        self.align_e3_to_d3 = Align1x1(C3, D3)  # d3: compare E2 vs E3   
         self.align_e2_to_d4 = Align1x1(C2, D4)  # for MSU at d4: E1 vs E2
 
         # If using two neighbors, add the remaining cross mapping aligners:
@@ -179,23 +179,12 @@ class UNet_HASSkip_MSU(nn.Module):
             return out
 
         elif level == 1:  # d3 uses E2; compare E2 vs E3 (and optionally E1)
-            A = self.align_e2_to_d3(E2, size_hw)
-            B1 = self.align_e3_to_d3(E3, size_hw) if self.use_two_msu_neighbors else self.align_e3_to_d3 if hasattr(self, 'align_e3_to_d3') else None
-            # Always need E3 neighbor once; ensure aligner exists
-            if B1 is None:
-                # create on-the-fly aligner for E3->D3 if not present (rare path if user toggles mid-run)
-                self.align_e3_to_d3 = Align1x1(E3.shape[1], A.shape[1])
-                B1 = self.align_e3_to_d3(E3, size_hw)
-            else:
-                if isinstance(B1, Align1x1):
-                    B1 = B1(E3, size_hw)
+            A  = self.align_e2_to_d3(E2, size_hw)
+            B1 = self.align_e3_to_d3(E3, size_hw)
             out = self.msu_d3(A, B1)
             if self.use_two_msu_neighbors:
                 B2 = self.align_e1_to_d3(E1, size_hw)
                 out = out + self.msu_d3(A, B2)
-            else:
-                # single-neighbor policy: prefer E3
-                pass
             return out
 
         else:  # level == 0: d4 uses E1; compare E1 vs E2

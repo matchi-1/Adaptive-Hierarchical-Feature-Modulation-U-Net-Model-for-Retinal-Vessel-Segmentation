@@ -186,10 +186,17 @@ def visualize_samples(
 class ModelEntry:
     name: str
     model: torch.nn.Module
-    pth: Optional[str] = None          # checkpoint (optional if already loaded)
     threshold: float = 0.5             # for binary masks
     device: Optional[str] = None       # override per model if needed
 
+def build_loaded(model_cls, pth, *, device, **kwargs):
+    m = model_cls(**kwargs)
+    sd = torch.load(pth, map_location="cpu")
+    sd = sd.get("state_dict", sd)
+    if any(k.startswith("module.") for k in sd):
+        sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
+    m.load_state_dict(sd, strict=True)
+    return m.to(device).eval()
 
 @torch.no_grad()
 def visualize_models_from_loader(
@@ -216,10 +223,7 @@ def visualize_models_from_loader(
       by taking the first channel (or mean) for display and prediction.
 
     Args:
-        models:       List of ModelEntry(name, model, pth?, threshold?, device?).
-                      If `pth` is provided, you should have already loaded weights
-                      before calling this, or handle it externally once. (This
-                      function only runs inference.)
+        models:       List of ModelEntry(name, model, threshold?, device?).
         dataloader:   PyTorch DataLoader yielding dicts with keys described above.
         n_rows:       Number of rows (samples) to display.
         device:       Default device to move models to; defaults to CUDA if available.
@@ -252,7 +256,10 @@ def visualize_models_from_loader(
     n_cols = 3 + len(ready_models)
     fig_w = figsize_per_row[0]
     fig_h = figsize_per_row[1] * n_rows
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h))
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(3.0 * n_cols, 3.0 * n_rows),
+    )
     if n_rows == 1:
         axes = np.expand_dims(axes, 0)  # unify indexing for single-row case
 
@@ -336,8 +343,7 @@ def visualize_models_from_loader(
                     ax.imshow(im, cmap="gray", vmin=0.0, vmax=1.0)
                 else:
                     ax.imshow(im)
-                if rows_done == 0:
-                    ax.set_title(col_titles[c], fontsize=10)
+                ax.set_title(col_titles[c], fontsize=10, pad=3)
                 ax.axis("off")
 
             rows_done += 1
