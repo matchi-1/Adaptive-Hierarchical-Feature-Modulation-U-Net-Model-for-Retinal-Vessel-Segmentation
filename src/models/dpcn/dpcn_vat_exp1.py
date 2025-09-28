@@ -41,10 +41,15 @@ class DPCNIter(nn.Module):
         self.threshold_mode = threshold_mode
 
         # β, aE, V_E as hyperparams (frozen rn, revisit later if we want to make them learnable parameters) 
-        self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # scalar parameter (hyperparam) controls how much linking affects modulation
-        self.aE  = nn.Parameter(torch.tensor(float(aE)),   requires_grad=False)   # decay constant (hyperparam) - how fast the threshold decays
-        self.V_E = nn.Parameter(torch.tensor(float(V_E)),  requires_grad=False)   # growth scale (hyperparam) - how much the last activation raises the threshold
+        # self.beta = nn.Parameter(torch.tensor(float(beta)), requires_grad=False)   # scalar parameter (hyperparam) controls how much linking affects modulation
+        # self.aE  = nn.Parameter(torch.tensor(float(aE)),   requires_grad=False)   # decay constant (hyperparam) - how fast the threshold decays
+        # self.V_E = nn.Parameter(torch.tensor(float(V_E)),  requires_grad=False)   # growth scale (hyperparam) - how much the last activation raises the threshold
 
+        self.beta = nn.Parameter(torch.tensor(float(beta)))   # LEARNABLE scalar parameter (hyperparam) controls how much linking affects modulation
+        self.aE  = nn.Parameter(torch.tensor(float(aE)))   # LEARNABLE decay constant (hyperparam) - how fast the threshold decays
+        self.V_E = nn.Parameter(torch.tensor(float(V_E)))   # LEARNABLE growth scale (hyperparam) - how much the last activation raises the threshold
+
+ 
         # ---- 1.) Coupled Linking Subsystem Setup ----
         # (insert eq here later)
 

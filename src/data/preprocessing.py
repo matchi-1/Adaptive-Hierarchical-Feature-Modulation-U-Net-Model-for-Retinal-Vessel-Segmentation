@@ -103,65 +103,64 @@ Contracts:
     - Background zeroed if apply_fov=True.
 '''
 
-def preprocess_image_retina(path: str,
-                            target_size: int = 512,                    # another good observable value: gamma=0.75, clahe_clip=3.5, clahe_tiles=4
-                            use_gamma: bool = True, gamma: float = 0.9,
-                            clahe_clip: float = 2.0, clahe_tiles: int = 8,
-                            apply_fov: bool = True,
-                            mask_path: str | None = None): #auto_discover_mask: bool = True) -> np.ndarray
-    
+def preprocess_image_retina(
+    path: str,
+    target_size: int = 512,                 # good alt: gamma=0.75, clahe_clip=3.5, clahe_tiles=4
+    use_gamma: bool = True, gamma: float = 0.9,
+    clahe_clip: float = 2.0, clahe_tiles: int = 8,
+):
+    """
+    Memory-safe fundus preprocessing that works well for vessels.
 
-    bgr = cv2.imread(path, cv2.IMREAD_COLOR)               # load image as BGR uint8
+    Sequence (intentionally ordered to avoid huge allocations):
+      1) Read as BGR uint8 (cheap).
+      2) Extract GREEN channel as uint8 (hemoglobin contrast lives here).
+      3) Isotropic resize + pad the SINGLE channel to target size (still uint8).
+      4) Apply CLAHE on uint8 (OpenCV expects 8-bit; avoids float32 3x memory).
+      5) Convert to float32 in [0,1].
+      6) Optional gentle gamma to lift faint vessels.
+      7) Return (1,H,W) float32.
+
+    Notes:
+      - We DO NOT convert the full RGB to float32 before resizing — that’s what caused
+        the large allocation (e.g., 5043×5837×3 float32 ≈ 337 MB).
+      - FOV masking is handled later in the Dataset; keep it out of preprocessing.
+    """
+
+    # 1) Read image as BGR uint8 (no big intermediate arrays)
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
     if bgr is None:
-        raise FileNotFoundError(f"Could not load image at {path}")  # explicit failure if path is bad
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # convert to RGB float32 [0,1]
+        raise FileNotFoundError(f"Could not load image at {path}")
 
-    rgb = _iso_resize_and_pad(rgb, target=target_size, pad_value=0.0)      # isotropic resize + zero pad
+    # 2) Use the GREEN channel (uint8). This is cheap and vessel-friendly.
+    #    (We *don’t* convert to float32 or RGB yet.)
+    g_u8 = bgr[..., 1]  # shape (H,W), dtype=uint8
 
-    g = rgb[..., 1]                                         # extract green channel (HxW float32 [0,1])
+    # 3) Isotropic resize + pad to square target size (still uint8 to save memory).
+    #    Ensure _iso_resize_and_pad handles 2D arrays and picks INTER_AREA for downscaling.
+    g_u8 = _iso_resize_and_pad(g_u8, target=target_size, pad_value=0)
 
+    # ----------------------------------------------------------------------
+    # How CLAHE works:
+    #   - Split into (H/tiles)×(W/tiles) grid of tiles.
+    #   - Clip histogram bins to a cap derived from clipLimit to limit noise amp.
+    #   - Normalize and interpolate across tiles for smooth transitions.
+    # ----------------------------------------------------------------------
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
 
-    '''
-    How CLAHE works:
-        - Split the image into a grid of tiles of size (H/clahe_tiles)×(W/clahe_tiles)
-        - For each tile, compute its 256-bin histogram
-        - Clip each bin to a cap T derived from clipLimit to prevent rare bins from exploding contrast (noise amplification).
-        - Normalize the histogram so it sums to 1
-        - Interpolate between tiles to smooth the transitions
-    '''
+    # 4) CLAHE expects 8-bit; apply in uint8 space for speed & stability.
+    g_eq_u8 = clahe.apply(g_u8)  # still (H,W) uint8
 
-    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))  # CLAHE op
+    # 5) Convert to float32 [0,1] only after CLAHE
+    g = g_eq_u8.astype(np.float32) / 255.0
 
-    # why green channel: hemoglobin absorbs green → vessels have stronger contrast in G than R/B; dropping to one channel reduces noise and parameters.
-    g_eq = clahe.apply((g * 255.0).astype(np.uint8)).astype(np.float32) / 255.0            # CLAHE on uint8 view
+    # 6) Optional gentle gamma (keep range checks to avoid weird config)
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        # skimage.exposure.adjust_gamma expects float in [0,1]
+        g = exposure.adjust_gamma(g, gamma=gamma)
 
-    if use_gamma and 0.5 <= gamma <= 1.2:                   # guardrails on gamma range
-        g_eq = exposure.adjust_gamma(g_eq, gamma=gamma)     # mild gamma to lift faint vessels
-
-    # --- FOV gating: prefer existing mask; else estimator if allowed ---
-    if apply_fov:
-        fov_mask = None
-        cand: Path | None = None
-
-        # *** STRICT MODE: FOV mask must be provided and must exist. ***
-        if mask_path is None:
-            raise ValueError(
-                "FOV mask_path is required but was not provided. "
-            )
-        cand = Path(mask_path)
-
-        if not cand.exists():
-            raise FileNotFoundError(f"FOV mask not found at {cand}")
-
-        # preprocess the existing mask to align geometry
-        fov_mask = preprocess_mask(str(cand), target_size=target_size)[0]  # (1,H,W)->(H,W)
-
-        if fov_mask is not None:
-            g_eq *= fov_mask  # elementwise gating
-
-    return np.expand_dims(g_eq.astype(np.float32), axis=0)  # (1,H,W) float32 in [0,1]
-
-
+    # 7) Return with a channel dimension: (1,H,W) float32
+    return np.expand_dims(g.astype(np.float32), axis=0)
 
 '''
 preprocess_mask

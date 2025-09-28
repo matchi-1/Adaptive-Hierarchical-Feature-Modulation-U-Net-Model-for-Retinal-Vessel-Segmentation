@@ -102,7 +102,7 @@ def make_loaders(
     )
 
     # call helper func to create seed for each worker process
-    worker_init = _worker_seed_init # seed_worker  
+    worker_init = seed_worker  # _worker_seed_init
 
     # build dataloaders
     train_loader = DataLoader(
