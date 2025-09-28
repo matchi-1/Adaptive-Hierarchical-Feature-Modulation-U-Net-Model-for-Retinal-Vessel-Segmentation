@@ -245,6 +245,11 @@ def evaluate_models_table(
     fov_key: str  = "fov",
     decimals: int = 4,
     mark_best: bool = True,
+    # Base comparison controls
+    base_name: str = "BASE",             # compare everything to this model column (by name)
+    rel_tol: float = 0.002,              # ~0.2% relative tolerance to call “same”
+    abs_tol: float | None = None,        # optional absolute tolerance; if None we derive from `decimals`
+    arrow_symbols: tuple[str, str, str] = ("↑", "↓", "–")
 ) -> Tuple["pd.DataFrame", "pd.DataFrame"]:
     """
     Evaluate multiple models and return a table of metrics.
@@ -262,15 +267,20 @@ def evaluate_models_table(
     # Import here to avoid hard dependency if user only wants printing
     import pandas as pd
 
+    def _fmt(x: float) -> str:
+        return "NaN" if pd.isna(x) else f"{x:.{decimals}f}"
+
     # Which metrics we try to report and in what order:
     macro_order = [
         "Sensitivity","Specificity", "Dice","clDice","Dice_thin","Dice_thick",
         "Accuracy","IoU","Precision","FPR","FDR","ROC_AUC","PR_AUC"
     ]
+
     micro_order = [
         "Sensitivity","Specificity","F1/Dice", "Precision","IoU","Accuracy",
         "FPR","FDR","ROC_AUC","PR_AUC"
     ]
+
     order = macro_order if average.lower() == "macro" else micro_order
 
     # Decide which direction is "better"
@@ -309,16 +319,20 @@ def evaluate_models_table(
 
             # Forward
             logits = mdl(imgs)
+            
             if isinstance(logits, (list, tuple)):
                 logits = logits[-1]
 
             # Convert to probs in [0,1]
             if logits.ndim == 4 and logits.shape[1] == 2:
                 probs = torch.softmax(logits, dim=1)[:, 1]
+            
             elif logits.ndim == 4 and logits.shape[1] == 1:
                 probs = torch.sigmoid(logits[:, 0])
+            
             elif logits.ndim == 3:
                 probs = torch.sigmoid(logits)
+            
             else:
                 raise ValueError(f"Unexpected logits shape: {tuple(logits.shape)}")
 
@@ -352,13 +366,16 @@ def evaluate_models_table(
                 # Optional topological & thin/thick
                 try:
                     macro_sums["clDice"]  += cldice(pred_np, gt_np)
+                
                 except Exception:
                     pass
+                
                 try:
                     thin_p, thick_p = thin_thick(pred_np)
                     thin_t, thick_t = thin_thick(gt_np)
                     macro_sums["Dice_thin"]  += dice(thin_p, thin_t)
                     macro_sums["Dice_thick"] += dice(thick_p, thick_t)
+                
                 except Exception:
                     pass
 
@@ -370,23 +387,29 @@ def evaluate_models_table(
                 # AUC per-image & pooled
                 if compute_auc:
                     prob_i = probs[i].detach().cpu().numpy()
+                    
                     if prob_i.shape != gt_np.shape:
                         prob_t = torch.from_numpy(prob_i)[None, None].float()
                         prob_t = F.interpolate(prob_t, size=gt_np.shape, mode="bilinear", align_corners=False)
                         prob_i = prob_t[0,0].cpu().numpy()
                     try:
                         auc_roc = roc_auc(prob_i, gt_np)
+                        
                         if not np.isnan(auc_roc): roc_sum += auc_roc; roc_n += 1
                         auc_pr  = pr_auc(prob_i, gt_np)
+                        
                         if not np.isnan(auc_pr):  pr_sum  += auc_pr;  pr_n  += 1
+                    
                     except Exception:
                         pass
+                    
                     probs_all.append(prob_i.ravel()); gts_all.append(gt_np.ravel())
 
         # Finalize macro
         macro = {k: (v / max(n_macro, 1)) for k, v in macro_sums.items()}
         if compute_auc and roc_n:
             macro["ROC_AUC"] = roc_sum / roc_n
+        
         if compute_auc and pr_n:
             macro["PR_AUC"]  = pr_sum  / pr_n
 
@@ -395,11 +418,15 @@ def evaluate_models_table(
         if compute_auc and len(probs_all):
             probs_all = np.concatenate(probs_all, axis=0)
             gts_all   = np.concatenate(gts_all,   axis=0)
+            
             if gts_all.max() != gts_all.min():
+                
                 try:
+                    
                     from sklearn.metrics import roc_auc_score, average_precision_score
                     micro["ROC_AUC"] = float(roc_auc_score(gts_all, probs_all))
                     micro["PR_AUC"]  = float(average_precision_score(gts_all, probs_all))
+                
                 except Exception:
                     pass
 
@@ -425,22 +452,64 @@ def evaluate_models_table(
     df_numeric = df.astype(float)
 
     # Pretty copy with markers
-    df_pretty = df_numeric.copy().round(decimals).astype(object)
+    df_pretty = df_numeric.copy().astype(object)
+    for r in df_pretty.index:
+        for c in df_pretty.columns:
+            df_pretty.loc[r, c] = _fmt(df_numeric.loc[r, c])
 
-    if mark_best:
-        for r_idx, metric in enumerate(df_pretty.index):
-            series = df_numeric.loc[metric]
-            # Skip rows where everything is NaN
-            if series.isna().all():
+    # 1) STAR pass — mark best value(s) per metric row
+#    (higher-is-better by default; lower-is-better for metrics in `minimize`)
+    star_mask = pd.DataFrame(False, index=df_pretty.index, columns=df_pretty.columns)
+
+    for metric in df_pretty.index:
+        series = df_numeric.loc[metric]
+        
+        if series.isna().all():
+            continue
+        
+        best_val = series.min(skipna=True) if metric in minimize else series.max(skipna=True)
+        mask = (series == best_val)
+        star_mask.loc[metric, mask.index[mask]] = True
+        
+        for col in series.index[mask]:
+            
+            # put ONLY the star (no arrows/dash will be added later for these cells)
+            df_pretty.loc[metric, col] = f"{df_pretty.loc[metric, col]} ★"
+
+    # 2) ARROW/DASH pass — compare to BASE, but skip any starred cells
+    up, down, same = arrow_symbols
+
+    # Choose base column (fallback to first if `base_name` not found)
+    base_col_name = base_name if base_name in df_numeric.columns else df_numeric.columns[0]
+    base_series = df_numeric[base_col_name]
+
+    # Tolerances: – if nearly equal
+    derived_abs_tol = 0.5 * (10 ** (-decimals))
+    abs_tol = derived_abs_tol if abs_tol is None else abs_tol
+
+    def _nearly_equal(a: float, b: float) -> bool:
+        return abs(a - b) <= max(abs_tol, rel_tol * max(abs(b), 1.0))
+
+    for metric in df_pretty.index:
+        b = base_series.loc[metric]
+        
+        if pd.isna(b):
+            continue
+        
+        for col in df_pretty.columns:
+            if star_mask.loc[metric, col]:
+                continue  # leave the star only
+            v = df_numeric.loc[metric, col]
+            
+            if pd.isna(v):
                 continue
-            # Choose best depending on metric
-            if metric in minimize:
-                best_val = series.min(skipna=True)
+            
+            if col == base_col_name or _nearly_equal(v, b):
+                sym = same
+            
             else:
-                best_val = series.max(skipna=True)
-            # Mark *all* ties
-            mask = (series == best_val)
-            for c in df_pretty.columns[mask]:
-                df_pretty.loc[metric, c] = f"{df_pretty.loc[metric, c]} ★"
-
+                sym = up if v > b else down
+            
+            df_pretty.loc[metric, col] = f"{df_pretty.loc[metric, col]} {sym}"
+    
     return df_numeric, df_pretty
