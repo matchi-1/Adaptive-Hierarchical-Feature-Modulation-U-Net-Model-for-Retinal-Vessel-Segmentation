@@ -11,7 +11,7 @@ class Res2NetBackbone(nn.Module):
     """
     def __init__(self, in_ch: int = 3, pretrained: bool = False):
         super().__init__()
-        # Instantiate the base network. Adjust args to match your file.
+        # Instantiate the base network.
         self.body = Res2Net(Bottle2neck, [3, 4, 6, 3], baseWidth = 26, scale = 4)  # or Res2Net50(...)
 
         # --- Stem patching for non-RGB inputs ---
