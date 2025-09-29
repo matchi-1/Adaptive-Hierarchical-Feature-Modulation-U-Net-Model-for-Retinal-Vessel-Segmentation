@@ -112,7 +112,7 @@ class UpBlock(nn.Module):
         return x
 
 # --- U-Net + MSU in the decoder path ---
-class UNetBaselinePlus(nn.Module):
+class UNetBaselinePlusMSU(nn.Module):
     """
     Strong 'vanilla' U-Net for 1-channel inputs and 1-channel logits output.
     - GroupNorm (stable for small batches)
