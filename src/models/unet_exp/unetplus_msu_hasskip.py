@@ -102,7 +102,7 @@ class UpBlockHASMSU(nn.Module):
         return x
 
 # --- U-Net with HAS-Skip + MSU fusion ---
-class UNetBaselinePlus(nn.Module):
+class UNetBaselinePlusHASskipMSU(nn.Module):
     """
     Modern U-Net with:
       - GN, residual encoder/decoder blocks, bilinear upsampling
