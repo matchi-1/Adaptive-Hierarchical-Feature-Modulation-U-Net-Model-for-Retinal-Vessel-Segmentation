@@ -47,21 +47,31 @@ class MSU(nn.Module):
         self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=not use_bn)
         self.conv5 = nn.Conv2d(in_channels, out_channels, kernel_size=5, padding=2, bias=not use_bn)
 
+        # NEW: Eq. 2.29 compression conv
+        self.post3 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+
         # optional post-fusion refinement
-        self.bn = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
+        # self.bn = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
+        # self.act = nn.ReLU(inplace=True) if activation else nn.Identity()
+
+        # Prefer GN for small batches
+        self.bn  = nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels) if use_bn else nn.Identity()
         self.act = nn.ReLU(inplace=True) if activation else nn.Identity()
 
-        # simple Kaiming init; weight + bias init for convs
-        for m in [self.conv1, self.conv3, self.conv5]:
+        # # simple Kaiming init; weight + bias init for convs
+        # for m in [self.conv1, self.conv3, self.conv5]:
 
-            # draws each conv weight from a normal distribution whose variance 
-            # is chosen to keep activations well-scaled in ReLU
-            nn.init.kaiming_normal_(m.weight, nonlinearity='relu') 
+        #     # draws each conv weight from a normal distribution whose variance 
+        #     # is chosen to keep activations well-scaled in ReLU
+        #     nn.init.kaiming_normal_(m.weight, nonlinearity='relu') 
 
-            if m.bias is not None:
-                # bias = 0 is a safe default; 
-                # when a following BatchNorm is present, the conv bias is effectively redundant
-                nn.init.zeros_(m.bias)
+        #     if m.bias is not None:
+        #         # bias = 0 is a safe default; 
+        #         # when a following BatchNorm is present, the conv bias is effectively redundant
+        #         nn.init.zeros_(m.bias)
+        
+        for m in [self.conv1, self.conv3, self.conv5, self.post3]:
+            nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
 
     def forward(self, F_A: torch.Tensor, F_B: torch.Tensor) -> torch.Tensor:
         """
@@ -97,6 +107,9 @@ class MSU(nn.Module):
                torch.abs(a3 - b3) +
                torch.abs(a5 - b5))
 
+        # out = self.bn(out)
+        # out = self.act(out)
+        out = self.post3(out)
         out = self.bn(out)
         out = self.act(out)
         return out
