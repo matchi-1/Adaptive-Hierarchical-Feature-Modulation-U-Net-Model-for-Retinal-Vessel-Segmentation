@@ -62,6 +62,12 @@ def make_loaders(
     strict_fov: bool = True,                      # if True, raise error if FOV mask is missing; else skip applying
     augs_train=None,                              # Albumentations Compose object with training augmentations
     augs_val=None,                                # Albumentations Compose object with validation preprocessing
+
+    # preprocessing 
+    use_gamma: bool = True,        
+    gamma: float = 0.9,
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
 ):
 
     """
@@ -95,10 +101,24 @@ def make_loaders(
 
     # build final datasets with augmentations
     trn = FundusSegDataset(
-        trn_pairs, image_size=image_size, augs=augs_train, strict_fov=strict_fov
+        trn_pairs,
+        image_size=image_size,
+        augs=augs_train,
+        strict_fov=strict_fov,
+        use_gamma = use_gamma,        
+        gamma = gamma,
+        clahe_clip = clahe_clip,
+        clahe_tiles = clahe_tiles
     )
     val = FundusSegDataset(
-        val_pairs, image_size=image_size, augs=augs_val, strict_fov=strict_fov
+        val_pairs,
+        image_size=image_size,
+        augs=augs_val,
+        strict_fov=strict_fov,
+        use_gamma = use_gamma,        
+        gamma = gamma,
+        clahe_clip = clahe_clip,
+        clahe_tiles = clahe_tiles
     )
 
     # call helper func to create seed for each worker process
