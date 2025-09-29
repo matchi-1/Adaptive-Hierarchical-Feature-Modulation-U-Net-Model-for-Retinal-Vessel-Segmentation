@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from dataclasses import dataclass
 from typing import Optional, List
-import re
+from pathlib import Path
+import os, re
 
 def _read_original_rgb(path: str) -> np.ndarray:
     """
@@ -40,20 +41,36 @@ def _read_mask_gray_01(path: str) -> np.ndarray:
         arr /= 255.0
     return arr
 
-def _derive_drive_manual2_from_image_path(image_path: str) -> Optional[str]:
+def _derive_drive_manual2_from_image_path(image_path: str,
+                                          *,
+                                          try_exts=(".png", ".jpg")) -> Optional[str]:
     """
-    Given .../DRIVE/test/images/01_test.png → .../DRIVE/test/2nd_manual/01_manual2.png
+    Given .../DRIVE/test/images/01_test.png → .../DRIVE/test/2nd_manual/01_manual2.<ext>
+    Tries multiple extensions and returns the first path that actually exists, else None.
     """
     try:
-        base = os.path.basename(image_path)              # "01_test.png"
-        m = re.match(r"(\d+)_test\.png$", base)
+        p = Path(image_path)
+        # p.stem is '01_test' for '01_test.png'
+        m = re.match(r"(\d+)_test$", p.stem)
         if not m:
             return None
+
         img_num = m.group(1)
-        images_dir = os.path.dirname(image_path)         # .../DRIVE/test/images
-        test_dir   = os.path.dirname(images_dir)         # .../DRIVE/test
-        manual2    = os.path.join(test_dir, "2nd_manual", f"{img_num}_manual2.png")
-        return manual2
+        manual_dir = p.parent.parent / "2nd_manual"
+
+        # 1) Try common lowercase & uppercase extensions explicitly
+        cand_exts = list(try_exts) + [ext.upper() for ext in try_exts]
+        for ext in cand_exts:
+            cand = manual_dir / f"{img_num}_manual2{ext}"
+            if cand.exists():
+                return str(cand)
+
+        # 2) Fallback: glob any extension matching the base pattern
+        matches = sorted(manual_dir.glob(f"{img_num}_manual2.*"))
+        if matches:
+            return str(matches[0])
+
+        return None
     except Exception:
         return None
 
