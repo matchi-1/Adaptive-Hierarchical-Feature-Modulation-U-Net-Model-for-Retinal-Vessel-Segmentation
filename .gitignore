@@ -16,4 +16,5 @@ data/STARE
 #pth files
 *.pth
 *.pt
-notebooks/runs/
+notebooks/runs
+notebooks\runs
