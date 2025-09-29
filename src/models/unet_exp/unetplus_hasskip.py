@@ -74,7 +74,7 @@ class UpBlockHAS(nn.Module):
         return x
 
 # --- U-Net with HAS-Skip (no MSU) ---
-class UNetBaselinePlus(nn.Module):
+class UNetBaselinePlusHASskip(nn.Module):
     """
     Strong 'vanilla' U-Net + HAS-Skip for 1-channel inputs and 1-channel logits output.
     - GroupNorm, residual blocks, bilinear upsample

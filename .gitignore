@@ -18,3 +18,5 @@ data/STARE
 *.pt
 notebooks/runs
 notebooks\runs
+
+notebooks/**/runs/**.json
