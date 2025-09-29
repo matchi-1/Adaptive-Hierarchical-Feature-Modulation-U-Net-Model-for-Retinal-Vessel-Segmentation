@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from dataclasses import dataclass
 from typing import Optional, List
+import re
 
 def _read_original_rgb(path: str) -> np.ndarray:
     """
@@ -31,6 +32,30 @@ def _read_original_rgb(path: str) -> np.ndarray:
     if arr.max() > 1.0:  # Normalize if stored as 0–255
         arr = arr / 255.0
     return arr
+
+def _read_mask_gray_01(path: str) -> np.ndarray:
+    img = Image.open(path).convert("L")
+    arr = np.asarray(img, dtype=np.float32)
+    if arr.max() > 1.0:
+        arr /= 255.0
+    return arr
+
+def _derive_drive_manual2_from_image_path(image_path: str) -> Optional[str]:
+    """
+    Given .../DRIVE/test/images/01_test.png → .../DRIVE/test/2nd_manual/01_manual2.png
+    """
+    try:
+        base = os.path.basename(image_path)              # "01_test.png"
+        m = re.match(r"(\d+)_test\.png$", base)
+        if not m:
+            return None
+        img_num = m.group(1)
+        images_dir = os.path.dirname(image_path)         # .../DRIVE/test/images
+        test_dir   = os.path.dirname(images_dir)         # .../DRIVE/test
+        manual2    = os.path.join(test_dir, "2nd_manual", f"{img_num}_manual2.png")
+        return manual2
+    except Exception:
+        return None
 
 
 def _to_hw_numpy_01(t: torch.Tensor) -> np.ndarray:
@@ -105,7 +130,7 @@ def visualize_samples(
     """
     Show a grid of model predictions compared to original and ground truth.
 
-    Grid layout: [Original | Preprocessed | Ground Truth | Predicted].
+    Grid layout: [Original | Preprocessed | Ground Truth 1 | Ground Truth 1 | Predicted].
 
     Args:
         model: Trained segmentation model.
@@ -121,7 +146,7 @@ def visualize_samples(
         device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
-    n_cols = 4
+    n_cols = 5  # Original | Preprocessed | Ground Truth 1 | Ground Truth 2 | Predicted
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(figsize_per_row[0], figsize_per_row[1] * n_rows))
     if n_rows == 1:
@@ -149,25 +174,27 @@ def visualize_samples(
             path = paths[b] if isinstance(paths, (list, tuple)) and len(paths) > b else None
 
             # 1. Original (from path if available, else preprocessed)
-            if path and os.path.exists(path):
-                original = _read_original_rgb(path)
-            else:
-                original = _to_hw_numpy_01(img_1hw)
+            original = _read_original_rgb(path) if (path and os.path.exists(path)) else _to_hw_numpy_01(img_1hw)
 
             # 2. Preprocessed
             pre = _to_hw_numpy_01(img_1hw)
 
-            # 3. Ground Truth
-            gt = _to_hw_numpy_01(msk_1hw)
+            # 3. Ground Truth 1 (from dataloader mask)
+            gt1 = _to_hw_numpy_01(msk_1hw)
 
-            # 4. Model Prediction
+            # 4. Ground Truth 2 (derived from image_path)
+            gt2_path = _derive_drive_manual2_from_image_path(path) if path else None
+            gt2 = _read_mask_gray_01(gt2_path) if (gt2_path and os.path.exists(gt2_path)) else np.zeros_like(gt1)
+
+            # 5. Predicted
             prob, pred = _predict_single(model, img_1hw, device=device, threshold=threshold)
             if clamp_pred_with_fov and fov_1hw is not None:
                 fov_np = _to_hw_numpy_01(fov_1hw)
-                pred = pred * fov_np  # Restrict prediction to field of view
+                pred = pred * fov_np
 
-            row_imgs = [original, pre, gt, pred]
-            titles = ["Original", "Preprocessed", "Ground Truth", f"Predicted (≥{threshold:.2f})"]
+            row_imgs = [original, pre, gt1, gt2, pred]
+            titles   = ["Original", "Preprocessed", "Ground Truth 1", "Ground Truth 2",
+                        f"Predicted (≥{threshold:.2f})"]
 
             for c in range(n_cols):
                 ax = axes[rows_done, c]
@@ -214,7 +241,7 @@ def visualize_models_from_loader(
     Visualize samples from a DataLoader with predictions from multiple models.
 
     Layout per row:
-        [ Original | Preprocessed | Ground Truth | <Model 1> | <Model 2> | ... ]
+        [ Original | Preprocessed | Ground Truth 1 | Ground Truth 2 | <Model 1> | <Model 2> | ... ]
 
 
     Assumptions:
@@ -253,17 +280,19 @@ def visualize_models_from_loader(
     # ---------- Figure/grid setup ----------
     # 3 base columns: Original | Preprocessed | Ground Truth
     # + one column per model
-    n_cols = 3 + len(ready_models)
-    fig_w = figsize_per_row[0]
-    fig_h = figsize_per_row[1] * n_rows
+    n_cols = 4 + len(ready_models)
     fig, axes = plt.subplots(
         n_rows, n_cols,
         figsize=(3.0 * n_cols, 3.0 * n_rows),
     )
-    if n_rows == 1:
-        axes = np.expand_dims(axes, 0)  # unify indexing for single-row case
 
-    col_titles = ["Original", "Preprocessed", "Ground Truth"] + [nm for (nm, _, _, _) in ready_models]
+    if n_rows == 1:
+        axes = np.expand_dims(axes, 0)
+
+    fig_w = figsize_per_row[0]
+    fig_h = figsize_per_row[1] * n_rows
+    
+    col_titles = ["Original", "Preprocessed", "Ground Truth 1", "Ground Truth 2"] + [nm for (nm, _, _, _) in ready_models]
 
     rows_done = 0
 
@@ -276,6 +305,7 @@ def visualize_models_from_loader(
         msks = batch.get(mask_key, None)                 # [B,1,H,W] or [B,H,W] (optional)
         fovs = batch.get("fov", None)                    # [B,1,H,W] or [B,H,W] (optional)
         paths = batch.get("image_path", None)            # list/tuple of file paths (optional)
+        #print("[visualization.py] PATHS: ", paths)
 
         B = imgs.shape[0]
 
@@ -294,14 +324,14 @@ def visualize_models_from_loader(
             else:
                 img_1hw = img_chw[:1, ...]              # or img_chw.mean(0, keepdim=True)
 
-            # Ground truth (if available)
+            # Ground Truth 1
             if msks is not None:
                 msk = msks[b]
                 if msk.ndim == 3 and msk.shape[0] == 1:
                     msk = msk[0]                        # [H,W]
-                gt_np = _to_hw_numpy_01(msk)
+                gt1_np = _to_hw_numpy_01(msk)
             else:
-                gt_np = np.zeros_like(_to_hw_numpy_01(img_1hw))  # empty placeholder
+                gt1_np = np.zeros_like(_to_hw_numpy_01(img_1hw))  # empty placeholder
 
             # Original (prefer reading from path if given)
             path = None
@@ -317,6 +347,10 @@ def visualize_models_from_loader(
 
             # Preprocessed view (what the model roughly sees)
             pre_np = _to_hw_numpy_01(img_1hw)
+
+            # Ground Truth 2 (derive from image_path)
+            gt2_path = _derive_drive_manual2_from_image_path(path) if path else None
+            gt2_np = _read_mask_gray_01(gt2_path) if (gt2_path and os.path.exists(gt2_path)) else np.zeros_like(gt1_np)
 
             # For each model, run prediction on the same [1,H,W] tensor
             pred_cols: List[np.ndarray] = []
@@ -334,11 +368,10 @@ def visualize_models_from_loader(
                 pred_cols.append(bin_np)
 
             # ---------- Draw current row ----------
-            row_imgs = [original_np, pre_np, gt_np] + pred_cols
+            row_imgs = [original_np, pre_np, gt1_np, gt2_np] + pred_cols
             for c in range(n_cols):
                 ax = axes[rows_done, c]
                 im = row_imgs[c]
-                # If image is 2D -> show grayscale; if RGB array sneaks in, matplotlib handles it.
                 if isinstance(im, np.ndarray) and im.ndim == 2:
                     ax.imshow(im, cmap="gray", vmin=0.0, vmax=1.0)
                 else:
