@@ -83,17 +83,16 @@ class CBAMUNetPlus(nn.Module):
         r2 = self.cbam_s2(s2)    # (B, 2C,  H/2, W/2)
         r3 = self.cbam_s3(s3)    # (B, 4C,  H/4, W/4)
         r4 = self.cbam_s4(s4)    # (B, 8C,  H/8, W/8)
-        enc_feats_cbam = [r1, r2, r3, r4]
 
         # bottleneck + CBAM
         b  = self.bottleneck(p4)         # (B, 16C, H/16, W/16)
         b  = self.cbam_bottleneck(b)     # (B, 16C, H/16, W/16)
 
         # decoder with HAS+MSU fusion (using CBAM-refined encoder features)
-        d1 = self.u1(b,  enc_feats_cbam)  # (B, 8C,  H/8,  W/8)
-        d2 = self.u2(d1, enc_feats_cbam)  # (B, 4C,  H/4,  W/4)
-        d3 = self.u3(d2, enc_feats_cbam)  # (B, 2C,  H/2,  W/2)
-        d4 = self.u4(d3, enc_feats_cbam)  # (B, C,   H,    W)
+        d1 = self.u1(b,  r4)  # (B, 8C,  H/8,  W/8)
+        d2 = self.u2(d1, r3)  # (B, 4C,  H/4,  W/4)
+        d3 = self.u3(d2, r2)  # (B, 2C,  H/2,  W/2)
+        d4 = self.u4(d3, r1)  # (B, C,   H,    W)
 
         logits = self.head(d4)           # raw logits; apply sigmoid only at eval
         return logits
