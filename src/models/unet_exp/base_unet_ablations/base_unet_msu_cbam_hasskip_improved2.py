@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from src.models.unet import ConvBlock, EncoderBlock, DecoderBlock
 from src.models.blocks.msu import MSU
 from src.models.blocks.cbam import CBAM
+import math
 
 
 # ---------- helpers ----------
@@ -149,7 +150,6 @@ class SelectiveFusionGate(nn.Module):
         return F.adaptive_avg_pool2d(x, 1).flatten(1)
 
     def forward(self, f_msu, f_has):
-        import math  # local to keep file self-contained
         f_cbm = self.rcbam(f_has)
 
         # descriptors
