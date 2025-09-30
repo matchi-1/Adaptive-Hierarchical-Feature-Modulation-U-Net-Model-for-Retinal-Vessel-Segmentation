@@ -114,7 +114,7 @@ class HASSkip(nn.Module):
         return FSKIP_l
 
 
-class UNetWithMSUSkipsCBAM(nn.Module):
+class UNetWithMSUHASSkipsCBAM(nn.Module):
     """
     Full model:
       • Base UNet (unchanged)
