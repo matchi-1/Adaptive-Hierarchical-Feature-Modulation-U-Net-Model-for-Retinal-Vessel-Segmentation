@@ -1,4 +1,3 @@
-# src/models/unet_with_msu_cbam_has_adaptive.py
 import math
 import torch
 import torch.nn as nn
