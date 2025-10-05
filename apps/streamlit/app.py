@@ -154,6 +154,24 @@ def stage_runner(stage_placeholder, text):
         unsafe_allow_html=True
     )
 
+# --- image delete in selection stem ---
+def delete_image_by_stem(stem: str):
+    """Remove an image (and matching FOV/GT/results) by stem, then rerun."""
+    st.session_state["files_img"] = [
+        f for f in st.session_state.get("files_img", []) if stem_of(f.name) != stem
+    ]
+    st.session_state["files_fov"] = [
+        f for f in st.session_state.get("files_fov", []) if stem_of(f.name) != stem
+    ]
+    st.session_state["files_gt"] = [
+        f for f in st.session_state.get("files_gt", []) if stem_of(f.name) != stem
+    ]
+    st.session_state["results"].pop(stem, None)
+    if st.session_state.get("selected_stem") == stem:
+        st.session_state["selected_stem"] = None
+    st.rerun()
+
+
 def clear_session_outputs():
     st.session_state["results"] = {}
     st.session_state["messages"] = []
@@ -212,18 +230,35 @@ img_files = st.session_state["files_img"]
 fov_map = map_by_stem(st.session_state["files_fov"])
 gt_map  = map_by_stem(st.session_state["files_gt"]) if st.session_state["submode"] == "With Ground Truth" else {}
 
-# Thumbnail strip
+# Thumbnail strip (ONE SCROLLABLE ROW, fixed 3rem thumbs, with Delete)
 if img_files:
     st.markdown("#### Selection")
-    cols = st.columns(min(6, len(img_files)))
+
+    # Start custom wrapper (CSS targets .thumb-row)
+    st.markdown('<div class="thumb-row">', unsafe_allow_html=True)
+
+    cols = st.columns(len(img_files), gap="small")  # one row; CSS prevents wrapping
+
     for i, f in enumerate(img_files):
-        thumb = Image.open(f).convert("RGB")
-        thumb_small = thumb.copy()
-        thumb_small.thumbnail((180, 180))
-        with cols[i % len(cols)]:
-            if st.button(stem_of(f.name), key=f"pick_{i}"):
-                st.session_state["selected_stem"] = stem_of(f.name)
-            st.image(thumb_small, use_container_width=True)
+        stem = stem_of(f.name)
+        col = cols[i]
+        with col:
+            img = Image.open(f).convert("RGB")
+
+            # The CSS below enforces 3rem square, but this is a safe fallback if CSS fails:
+            # st.image(img, width=48, caption=None)
+            st.image(img, caption=None)
+
+            if st.button(stem, key=f"pick_{stem}", use_container_width=True):
+                st.session_state["selected_stem"] = stem
+
+            if st.button("✕", key=f"del_{stem}", help="Remove this image", use_container_width=True):
+                delete_image_by_stem(stem)
+
+    # Close wrapper
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 
 # Pick current
 sel_stem = st.session_state["selected_stem"]

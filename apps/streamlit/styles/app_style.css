@@ -1,4 +1,47 @@
-/* apps/streamlit/styles/app_style.css */
+/* === Scrollable selection row === */
+.thumb-row {
+  /* the wrapper itself scrolls horizontally */
+  overflow-x: auto;
+  padding: .25rem 0 .35rem 0;
+}
+
+/* force the Streamlit columns container to be a single flex row */
+.thumb-row [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-wrap: nowrap !important;   /* keep one row, no wrapping */
+  gap: .5rem;                      /* space between tiles */
+}
+
+/* fix each tile to a small width so the row can overflow and scroll */
+.thumb-row [data-testid="column"] {
+  flex: 0 0 auto !important;      /* don't let columns shrink */
+  min-width: 5rem;                /* tile width (image + buttons) */
+  max-width: 5rem;
+  padding: 0 .125rem;             /* subtle inner padding */
+}
+
+/* === This block resizes each thumbnail image to exactly 3rem square === */
+.thumb-row [data-testid="stImage"] img {
+  width: 3rem !important;         /* ← image width */
+  height: 3rem !important;        /* ← image height */
+  object-fit: cover;
+  border-radius: .5rem;
+  display: block;
+  margin: 0 auto .25rem auto;     /* center + small gap */
+}
+
+/* buttons inside each tile */
+.thumb-row button {
+  font-size: .8rem;
+  padding: .25rem .4rem;
+  min-height: 1.6rem;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* keep your existing sidebar/footer/styles below as-is */
 section[data-testid="stSidebar"] > div[data-testid="stSidebarContent"] {
   display: flex;
   flex-direction: column;
@@ -9,7 +52,5 @@ section[data-testid="stSidebar"] > div[data-testid="stSidebarContent"] {
   padding-top: .5rem;
   border-top: 1px solid rgba(255,255,255,.1);
 }
-
-/* Optional polish */
 .status-ribbon { padding: 6px 10px; border-radius: 8px; background: #111; color: #eee; font-weight: 600; }
 .block-container { padding-top: 1rem; }
