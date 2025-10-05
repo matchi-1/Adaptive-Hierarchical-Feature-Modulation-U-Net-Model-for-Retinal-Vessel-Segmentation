@@ -1,0 +1,15 @@
+/* apps/streamlit/styles/app_style.css */
+section[data-testid="stSidebar"] > div[data-testid="stSidebarContent"] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: .5rem;
+  border-top: 1px solid rgba(255,255,255,.1);
+}
+
+/* Optional polish */
+.status-ribbon { padding: 6px 10px; border-radius: 8px; background: #111; color: #eee; font-weight: 600; }
+.block-container { padding-top: 1rem; }
