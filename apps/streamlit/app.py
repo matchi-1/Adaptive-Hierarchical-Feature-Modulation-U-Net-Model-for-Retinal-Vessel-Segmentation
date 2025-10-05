@@ -251,7 +251,8 @@ if up1 is not None:
 
 img_files = st.session_state["files_img"]
 
-# ---------------------- Selection (Prev/Next; no slider) ----------------------
+
+
 # ---------------------- Selection (Prev/Next with explicit Select/Unselect) ----------------------
 if img_files:
     stems = [stem_of(f.name) for f in img_files]
@@ -301,7 +302,11 @@ if img_files:
                 f"margin:.25rem 0 .5rem 0'>{banner_txt}</div>",
                 unsafe_allow_html=True
             )
-            fov_up = st.file_uploader(f"FOV for {stem}", type=["png","jpg","jpeg","tif"], key=f"fov_{stem}")
+            fov_up = st.file_uploader(
+                    f"FOV for {stem}",
+                    type=["png","jpg","jpeg","tif"],
+                    key=f"fov_sel_{stem}"
+                )
             if fov_up is not None:
                 st.session_state["fov_by_stem"][stem] = {
                     "name": fov_up.name,
@@ -313,7 +318,7 @@ if img_files:
             if fov_entry:
                 st.caption(f"Paired FOV: {fov_entry['name']}")
                 st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
-                if st.button("Remove FOV", key=f"rm_fov_{stem}", use_container_width=True):
+                if st.button("Remove FOV", key=f"rm_fov_sel_{stem}", use_container_width=True):
                     st.session_state["fov_by_stem"].pop(stem, None)
                     st.rerun()
             else:
@@ -338,41 +343,72 @@ if img_files:
                 delete_image_by_stem(stem)
             
 
-    # IMPORTANT: do NOT auto-assign selected_stem here
-    # (Viewer should use only what the user explicitly selected)
-    # st.session_state["selected_stem"] = stem  <-- remove this line
-
-
-# ---------------------- Viewer & status ----------------------
+# ---------------------- Viewer & status (Run/Stop moved here) ----------------------
 st.divider()
 viewer = st.container()
 with viewer:
-    header_cols = st.columns([1.4, 1, 1])
+    header_cols = st.columns([1.1, 1.1, 1.1, 0.9])
     with header_cols[0]:
         st.markdown("### Viewer")
     with header_cols[1]:
         overlay_toggle = st.toggle("Show overlay", value=True, key="overlay_tog")
     with header_cols[2]:
         alpha = st.slider("Opacity", 0, 100, 50, key="alpha")/100.0 if overlay_toggle else 0.0
+    with header_cols[3]:
+        # Run/Stop moved here
+        btn_run_viewer = st.button("Run Inference", type="primary", use_container_width=True,
+                                   disabled=st.session_state["running"] or st.session_state.get("selected_stem") is None)
+        btn_stop_viewer = st.button("Stop", use_container_width=True,
+                                    disabled=(st.session_state["running"] is False))
+
+    # Allow stopping from viewer
+    if btn_stop_viewer:
+        st.session_state["stop_flag"] = True
+        add_msg("info", "Stop requested; finishing current step…")
 
     stage = st.empty()  # live stage text “warming up / …”
     img_col, prob_col, out_col = st.columns([1, 1, 1])
 
     sel_stem = st.session_state.get("selected_stem")
     if sel_stem:
+        # Find file for selected stem
         img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
         if img_file is None:
             st.warning("Selected image not found.")
         else:
             img = pil_from_upload(img_file)
 
-            # Original + FOV (if any)
+            # Original + FOV (manage FOV here for the selected image)
             with img_col:
                 try_zoomable("Original (zoomable)" if zoomable_image else "Original", img)
-                fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-                if fov_entry:
-                    st.image(Image.open(io.BytesIO(fov_entry["bytes"])), caption="FOV", use_container_width=True)
 
+                fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                with st.expander(f"FOV for {sel_stem}", expanded=False):
+                    fov_up = st.file_uploader(
+                        "Upload/replace FOV",
+                        type=["png","jpg","jpeg","tif"],
+                        key=f"fov_view_{sel_stem}"
+                    )
+                    if fov_up is not None:
+                        st.session_state["fov_by_stem"][sel_stem] = {
+                            "name": fov_up.name,
+                            "mime": fov_up.type or "image/png",
+                            "bytes": fov_up.getvalue(),
+                        }
+                        st.success("FOV paired.")
+                        st.rerun()
+
+                    fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                    if fov_entry:
+                        st.caption(f"Paired: {fov_entry['name']}")
+                        st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
+                        if st.button("Remove FOV", key=f"rmfov_view_{sel_stem}", use_container_width=True):
+                            st.session_state["fov_by_stem"].pop(sel_stem, None)
+                            st.rerun()
+                    else:
+                        st.caption("No FOV paired.")
+
+            # Results panes if exist
             res = st.session_state["results"].get(sel_stem)
             if res:
                 with prob_col:
@@ -394,87 +430,60 @@ with viewer:
                     st.info("Run inference to view probability map.")
                 with out_col:
                     st.info("Overlay will appear here after prediction.")
-
-    
-    btn_run = st.button("Run Inference", type="primary", use_container_width=True)
-    btn_stop = st.button("Stop", use_container_width=True, disabled=st.session_state["running"] is False)
-
-    
-    if st.session_state["done_once"]:
-        btn_reset = st.button("Reset", use_container_width=True)
     else:
-        btn_reset = False
+        st.info("No image selected. Choose one in the Selection gallery above.")
 
-    if btn_reset:
-        clear_session_outputs()
-        st.rerun()
+# ---------------------- Inference trigger (viewer-scoped; runs on selected only) ----------------------
+if btn_run_viewer and (st.session_state.get("selected_stem") is not None) and (not st.session_state["running"]):
+    sel_stem = st.session_state["selected_stem"]
+    img_file = next((f for f in st.session_state["files_img"] if stem_of(f.name) == sel_stem), None)
 
-    if btn_stop:
-        st.session_state["stop_flag"] = True
-        add_msg("info", "Stop requested; finishing current step…")
+    if img_file is None:
+        add_msg("error", "Selected image not found.")
+    else:
+        st.session_state["running"] = True
+        st.session_state["stop_flag"] = False
+        add_msg("info", f"Starting inference for **{img_file.name}**.")
+        dev = device_label()
+        model = load_model("MATFHI", device=dev)
+        thr = st.session_state.get("threshold", 0.5)
 
-# ---------------------- Inference trigger ----------------------
-if btn_run and st.session_state.get("files_img") and (not st.session_state["running"]):
-    st.session_state["running"] = True
-    st.session_state["stop_flag"] = False
-    add_msg("info", "Starting inference run.")
-    dev = device_label()
-    model = load_model("MATFHI", device=dev)
-
-    thr = st.session_state.get("threshold", 0.5)
-
-    for f in st.session_state["files_img"]:
-        if st.session_state["stop_flag"]:
-            break
-        stem = stem_of(f.name)
-        im = pil_from_upload(f)
+        im = pil_from_upload(img_file)
         w, h = im.size
 
         # Per-image FOV from session mapping
         fov_im = None
-        fov_entry = st.session_state["fov_by_stem"].get(stem)
+        fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
         if fov_entry:
             with contextlib.suppress(Exception):
                 fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
 
-        gt_im = None  # GT disabled in this screen
-
         # Live stages
-        stage_runner(stage, "Warming up…")
-        time.sleep(0.05)
-
+        stage_runner(stage, "Warming up…"); time.sleep(0.05)
         t0 = time.time()
-        stage_runner(stage, "Preprocessing…")
-        time.sleep(0.05)
-
+        stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
         if st.session_state["stop_flag"]:
-            break
-        stage_runner(stage, "Predicting…")
-        prob = model.infer(im)  # [H,W] float32 in [0,1]
-        time.sleep(0.05)
+            stage_runner(stage, "Stopped.")
+        else:
+            stage_runner(stage, "Predicting…")
+            prob = model.infer(im)  # [H,W] float32 in [0,1]
+            time.sleep(0.05)
 
-        if st.session_state["stop_flag"]:
-            break
-        stage_runner(stage, "Post-processing…")
-        mask = (prob >= thr).astype(np.uint8) * 255
-        total_ms = (time.time() - t0) * 1000.0
+            stage_runner(stage, "Post-processing…")
+            mask = (prob >= thr).astype(np.uint8) * 255
+            total_ms = (time.time() - t0) * 1000.0
 
-        # Metrics if GT (none here by default)
-        metrics = None
+            st.session_state["results"][sel_stem] = {
+                "prob": prob, "mask": mask,
+                "timings": {"total_ms": total_ms},
+                "device": dev, "metrics": None
+            }
+            stage_runner(stage, "Done.")
 
-        st.session_state["results"][stem] = {
-            "prob": prob, "mask": mask,
-            "timings": {"total_ms": total_ms},
-            "device": dev, "metrics": metrics
-        }
-        st.session_state["selected_stem"] = stem  # focus latest
-        stage_runner(stage, "Done.")
+        st.session_state["running"] = False
+        st.session_state["done_once"] = True
         st.rerun()
 
-    st.session_state["running"] = False
-    st.session_state["done_once"] = True
-    stage_runner(stage, "Idle.")
-    st.rerun()
 
 # ---------------------- Messages / Errors bottom ----------------------
 st.divider()
