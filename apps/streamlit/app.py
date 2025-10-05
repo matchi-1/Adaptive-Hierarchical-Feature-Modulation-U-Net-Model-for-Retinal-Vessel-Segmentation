@@ -252,6 +252,7 @@ if up1 is not None:
 img_files = st.session_state["files_img"]
 
 # ---------------------- Selection (Prev/Next; no slider) ----------------------
+# ---------------------- Selection (Prev/Next with explicit Select/Unselect) ----------------------
 if img_files:
     stems = [stem_of(f.name) for f in img_files]
     n = len(stems)
@@ -276,16 +277,30 @@ if img_files:
     stem = stems[idx]
     file_obj = img_files[idx]
     img = Image.open(file_obj).convert("RGB")
+    is_selected = (st.session_state.get("selected_stem") == stem)
 
     st.divider()
     card = st.container(border=True)
     with card:
         top_cols = st.columns([2, 1])
+
+        # LEFT: name, big selected banner, image, select/unselect button
         with top_cols[0]:
             st.markdown(f"**{file_obj.name}**")
+
             st.image(img, use_container_width=True)
+
+
+        # RIGHT: per-image FOV controls and delete
         with top_cols[1]:
-            # Per-image FOV upload
+            # Big selected / not selected banner
+            banner_txt = "✅ SELECTED" if is_selected else "NOT SELECTED"
+            banner_col = "#0da2a2" if is_selected else "#c45959"
+            st.markdown(
+                f"<div style='font-size:1.35rem;font-weight:500;color:{banner_col};"
+                f"margin:.25rem 0 .5rem 0'>{banner_txt}</div>",
+                unsafe_allow_html=True
+            )
             fov_up = st.file_uploader(f"FOV for {stem}", type=["png","jpg","jpeg","tif"], key=f"fov_{stem}")
             if fov_up is not None:
                 st.session_state["fov_by_stem"][stem] = {
@@ -294,7 +309,6 @@ if img_files:
                     "bytes": fov_up.getvalue(),
                 }
 
-            # Show paired FOV if present
             fov_entry = st.session_state["fov_by_stem"].get(stem)
             if fov_entry:
                 st.caption(f"Paired FOV: {fov_entry['name']}")
@@ -306,12 +320,28 @@ if img_files:
                 st.caption("No FOV paired.")
 
             st.divider()
-            # Delete image (also drops paired FOV/results) and resets uploader widget
-            if st.button("Delete Image", key=f"del_img_{stem}", use_container_width=True):
-                delete_image_by_stem(stem)
+            # Select / Unselect buttons
+            c_sel1, c_sel2 = st.columns(2)
+            with c_sel1:
+                if st.button("Select this image", key=f"select_{stem}", use_container_width=True,
+                             disabled=is_selected):
+                    st.session_state["selected_stem"] = stem
+                    st.rerun()
+            with c_sel2:
+                if st.button("Unselect", key=f"unselect_{stem}", use_container_width=True,
+                             disabled=not is_selected):
+                    st.session_state["selected_stem"] = None
+                    st.rerun()
 
-    # Viewer follows current page selection
-    st.session_state["selected_stem"] = stem
+            # Delete full image button
+            if st.button("Delete Image / Image Pair", key=f"del_img_{stem}", use_container_width=True):
+                delete_image_by_stem(stem)
+            
+
+    # IMPORTANT: do NOT auto-assign selected_stem here
+    # (Viewer should use only what the user explicitly selected)
+    # st.session_state["selected_stem"] = stem  <-- remove this line
+
 
 # ---------------------- Viewer & status ----------------------
 st.divider()
