@@ -374,11 +374,6 @@ with viewer:
 
                 fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
                 with st.expander(f"FOV for {sel_stem}", expanded=False):
-                    fov_up = st.file_uploader(
-                        "Upload/replace FOV",
-                        type=["png","jpg","jpeg","tif"],
-                        key=f"fov_view_{sel_stem}"
-                    )
                     if fov_up is not None:
                         st.session_state["fov_by_stem"][sel_stem] = {
                             "name": fov_up.name,
@@ -392,11 +387,8 @@ with viewer:
                     if fov_entry:
                         st.caption(f"Paired: {fov_entry['name']}")
                         st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
-                        if st.button("Remove FOV", key=f"rmfov_view_{sel_stem}", use_container_width=True):
-                            st.session_state["fov_by_stem"].pop(sel_stem, None)
-                            st.rerun()
                     else:
-                        st.caption("No FOV paired.")
+                        st.caption("No uploaded FOV paired to this image.")
 
             # Results panes if exist
             res = st.session_state["results"].get(sel_stem)
