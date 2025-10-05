@@ -43,11 +43,13 @@ def init_state():
     ss.setdefault("mode_top", "Single Model (MATFHI)")
     ss.setdefault("submode", "Predict Only")  # or "With Ground Truth"
     ss.setdefault("selected_stem", None)
-    ss.setdefault("files_img", [])   # uploaded fundus files (right side)
-    ss.setdefault("files_gt", [])    # optional GT files
-    ss.setdefault("files_fov", [])   # optional FOV files
-    ss.setdefault("results", {})     # stem -> dict(prob, mask, timings, metrics)
-    ss.setdefault("messages", [])    # bottom console messages
+    ss.setdefault("sel_idx", 0)                         # pagination index
+    ss.setdefault("files_img", [])                      # uploaded fundus files
+    ss.setdefault("fov_by_stem", {})                   # {stem: {"name","mime","bytes"}}
+    ss.setdefault("files_gt", [])                      # kept for compatibility (unused here)
+    ss.setdefault("files_fov", [])                     # legacy; not used anymore
+    ss.setdefault("results", {})                       # stem -> dict(prob, mask, timings, metrics)
+    ss.setdefault("messages", [])                      # bottom console messages
     ss.setdefault("running", False)
     ss.setdefault("stop_flag", False)
     ss.setdefault("done_once", False)
@@ -65,9 +67,6 @@ def to_gray(im: Image.Image) -> Image.Image:
 
 def stem_of(name: str) -> str:
     return pathlib.Path(name).stem
-
-def map_by_stem(files) -> Dict[str, Any]:
-    return {stem_of(f.name): f for f in (files or [])}
 
 def colorize_mask(mask_255: np.ndarray) -> np.ndarray:
     """Return an RGB color mask (red) from a single-channel 0..255 mask."""
@@ -132,10 +131,10 @@ def render_telemetry_sidebar_footer():
         st.write(f"GPU: none (using {device_label()})")
 
     st.markdown("### How to use")
-    st.write("- Upload images on the **right**.")
-    st.write("- Click a thumbnail to **select** it.")
-    st.write("- Toggle **Overlay** (default 50% opacity).")
-    st.write("- **With GT** → metrics appear under the viewer.")
+    st.write("- Upload a **batch of fundus images** below.")
+    st.write("- Use **Prev/Next** to browse; upload a **per-image FOV** on the right.")
+    st.write("- FOV is automatically **paired** with its image.")
+    st.write("- Run inference from the sidebar; overlay/timing show in the Viewer.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 def try_zoomable(label: str, img: Image.Image):
@@ -148,7 +147,6 @@ def try_zoomable(label: str, img: Image.Image):
         st.image(img, caption=label, use_container_width=True)
 
 def stage_runner(stage_placeholder, text):
-    # Uses CSS class from stylesheet (e.g., .status-ribbon)
     stage_placeholder.markdown(
         f"<div class='status-ribbon'><b>Status:</b> {text}</div>",
         unsafe_allow_html=True
@@ -156,21 +154,23 @@ def stage_runner(stage_placeholder, text):
 
 # --- image delete in selection stem ---
 def delete_image_by_stem(stem: str):
-    """Remove an image (and matching FOV/GT/results) by stem, then rerun."""
+    """Remove image (and paired FOV/results) by stem, then rerun."""
     st.session_state["files_img"] = [
         f for f in st.session_state.get("files_img", []) if stem_of(f.name) != stem
     ]
-    st.session_state["files_fov"] = [
-        f for f in st.session_state.get("files_fov", []) if stem_of(f.name) != stem
-    ]
-    st.session_state["files_gt"] = [
-        f for f in st.session_state.get("files_gt", []) if stem_of(f.name) != stem
-    ]
+    # paired FOV
+    st.session_state["fov_by_stem"].pop(stem, None)
+    # any results
     st.session_state["results"].pop(stem, None)
+    # selection / pagination fixup
     if st.session_state.get("selected_stem") == stem:
         st.session_state["selected_stem"] = None
+    n = len(st.session_state.get("files_img", []))
+    if n == 0:
+        st.session_state["sel_idx"] = 0
+    else:
+        st.session_state["sel_idx"] = min(st.session_state["sel_idx"], n - 1)
     st.rerun()
-
 
 def clear_session_outputs():
     st.session_state["results"] = {}
@@ -179,6 +179,8 @@ def clear_session_outputs():
     st.session_state["running"] = False
     st.session_state["stop_flag"] = False
     st.session_state["done_once"] = False
+    st.session_state["sel_idx"] = 0
+    st.session_state["fov_by_stem"] = {}
 
 # ---------------------- Sidebar (top controls + sticky footer) ----------------------
 top = st.sidebar.container()
@@ -210,63 +212,90 @@ if btn_stop:
     add_msg("info", "Stop requested; finishing current step…")
 
 # ---------------------- Main layout ----------------------
-# Right side only (since notes/telemetry moved to sidebar footer)
 st.markdown("#### Inputs")
-up1 = st.file_uploader("Fundus image(s)", type=["png","jpg","jpeg","tif"], accept_multiple_files=True, key="u1")
-up2 = st.file_uploader("FOV mask(s) (optional)", type=["png","jpg","jpeg","tif"], accept_multiple_files=True, key="u2")
-up3 = None
-if st.session_state["submode"] == "With Ground Truth":
-    up3 = st.file_uploader("Ground truth mask(s)", type=["png","jpg","jpeg","tif"], accept_multiple_files=True, key="u3")
+up1 = st.file_uploader(
+    "Fundus images (batch upload)",
+    type=["png","jpg","jpeg","tif"],
+    accept_multiple_files=True,
+    key="u1"
+)
 
 # Keep uploaded files in session (so Reset can clear them)
 if up1 is not None:
     st.session_state["files_img"] = up1
-if up2 is not None:
-    st.session_state["files_fov"] = up2
-if up3 is not None:
-    st.session_state["files_gt"] = up3
 
 img_files = st.session_state["files_img"]
-fov_map = map_by_stem(st.session_state["files_fov"])
-gt_map  = map_by_stem(st.session_state["files_gt"]) if st.session_state["submode"] == "With Ground Truth" else {}
 
-# Thumbnail strip (ONE SCROLLABLE ROW, fixed 3rem thumbs, with Delete)
+# ---------------------- Selection (one-by-one with pagination + per-image FOV) ----------------------
 if img_files:
+    stems = [stem_of(f.name) for f in img_files]
+    n = len(stems)
+
+    # Bound the current index
+    st.session_state["sel_idx"] = max(0, min(st.session_state.get("sel_idx", 0), n - 1))
+    idx = st.session_state["sel_idx"]
+
     st.markdown("#### Selection")
 
-    # Start custom wrapper (CSS targets .thumb-row)
-    st.markdown('<div class="thumb-row">', unsafe_allow_html=True)
+    # Pagination controls
+    c_prev, c_mid, c_next = st.columns([1, 6, 1])
+    with c_prev:
+        if st.button("◀ Prev", use_container_width=True, disabled=(idx <= 0)):
+            st.session_state["sel_idx"] = max(0, idx - 1)
+            st.rerun()
+    with c_mid:
+        st.write(f"Image {idx+1}/{n}")
+        new_idx = st.slider("Go to", 1, n, idx+1, key="sel_slider", label_visibility="collapsed")
+        if new_idx - 1 != idx:
+            st.session_state["sel_idx"] = new_idx - 1
+            st.rerun()
+    with c_next:
+        if st.button("Next ▶", use_container_width=True, disabled=(idx >= n - 1)):
+            st.session_state["sel_idx"] = min(n - 1, idx + 1)
+            st.rerun()
 
-    cols = st.columns(len(img_files), gap="small")  # one row; CSS prevents wrapping
+    # Current item card
+    stem = stems[idx]
+    file_obj = img_files[idx]
+    img = Image.open(file_obj).convert("RGB")
 
-    for i, f in enumerate(img_files):
-        stem = stem_of(f.name)
-        col = cols[i]
-        with col:
-            img = Image.open(f).convert("RGB")
+    st.divider()
+    card = st.container(border=True)
+    with card:
+        top_cols = st.columns([2, 1])
+        with top_cols[0]:
+            st.markdown(f"**{file_obj.name}**")
+            st.image(img, use_container_width=True)
+        with top_cols[1]:
+            # Per-image FOV upload
+            fov_up = st.file_uploader(f"FOV for {stem}", type=["png","jpg","jpeg","tif"], key=f"fov_{stem}")
+            if fov_up is not None:
+                st.session_state["fov_by_stem"][stem] = {
+                    "name": fov_up.name,
+                    "mime": fov_up.type or "image/png",
+                    "bytes": fov_up.getvalue(),
+                }
 
-            # The CSS below enforces 3rem square, but this is a safe fallback if CSS fails:
-            # st.image(img, width=48, caption=None)
-            st.image(img, caption=None)
+            # Show paired FOV if present
+            fov_entry = st.session_state["fov_by_stem"].get(stem)
+            if fov_entry:
+                st.caption(f"Paired FOV: {fov_entry['name']}")
+                st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
+                if st.button("Remove FOV", key=f"rm_fov_{stem}", use_container_width=True):
+                    st.session_state["fov_by_stem"].pop(stem, None)
+                    st.rerun()
+            else:
+                st.caption("No FOV paired.")
 
-            if st.button(stem, key=f"pick_{stem}", use_container_width=True):
-                st.session_state["selected_stem"] = stem
-
-            if st.button("✕", key=f"del_{stem}", help="Remove this image", use_container_width=True):
+            st.divider()
+            # Delete image (also drops paired FOV/results)
+            if st.button("Delete Image", key=f"del_img_{stem}", use_container_width=True):
                 delete_image_by_stem(stem)
 
-    # Close wrapper
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Always drive the viewer from the current page selection
+    st.session_state["selected_stem"] = stem
 
-
-
-# Pick current
-sel_stem = st.session_state["selected_stem"]
-if not sel_stem and img_files:
-    sel_stem = stem_of(img_files[0].name)
-    st.session_state["selected_stem"] = sel_stem
-
-# Viewer & status
+# ---------------------- Viewer & status ----------------------
 st.divider()
 viewer = st.container()
 with viewer:
@@ -281,16 +310,21 @@ with viewer:
     stage = st.empty()  # live stage text “warming up / …”
     img_col, prob_col, out_col = st.columns([1, 1, 1])
 
+    sel_stem = st.session_state.get("selected_stem")
     if sel_stem:
-        # retrieve handles
+        # find file for selected stem
         img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
         if img_file is None:
             st.warning("Selected image not found.")
         else:
             img = pil_from_upload(img_file)
-            # Show the three panes; populate after run if results exist
+
+            # Original + FOV (if any)
             with img_col:
                 try_zoomable("Original (zoomable)" if zoomable_image else "Original", img)
+                fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                if fov_entry:
+                    st.image(Image.open(io.BytesIO(fov_entry["bytes"])), caption="FOV", use_container_width=True)
 
             res = st.session_state["results"].get(sel_stem)
             if res:
@@ -305,7 +339,7 @@ with viewer:
                     try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
                 st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
 
-                # Metrics (if GT and computed)
+                # Metrics (if GT and computed; GT UI is disabled in this screen)
                 if res.get("metrics"):
                     m = res["metrics"]
                     st.markdown(
@@ -318,75 +352,75 @@ with viewer:
                 with out_col:
                     st.info("Overlay will appear here after prediction.")
 
-    # ---------------------- Inference trigger ----------------------
-    if btn_run and img_files and (not st.session_state["running"]):
-        st.session_state["running"] = True
-        st.session_state["stop_flag"] = False
-        add_msg("info", "Starting inference run.")
-        # Load model (MATFHI for this tab; UNet later for comparison)
-        dev = device_label()
-        model = load_model("MATFHI", device=dev)
+# ---------------------- Inference trigger ----------------------
+if btn_run and img_files and (not st.session_state["running"]):
+    st.session_state["running"] = True
+    st.session_state["stop_flag"] = False
+    add_msg("info", "Starting inference run.")
+    # Load model (MATFHI for this tab; UNet later for comparison)
+    dev = device_label()
+    model = load_model("MATFHI", device=dev)
 
-        # loop images
-        for f in img_files:
-            if st.session_state["stop_flag"]:
-                break
-            stem = stem_of(f.name)
-            im = pil_from_upload(f)
-            w, h = im.size
+    # loop images
+    for f in img_files:
+        if st.session_state["stop_flag"]:
+            break
+        stem = stem_of(f.name)
+        im = pil_from_upload(f)
+        w, h = im.size
 
-            # FOV/GT matching
-            fov_im = None
-            if stem in fov_map:
-                with contextlib.suppress(Exception):
-                    fov_im = to_gray(Image.open(fov_map[stem])).resize((w, h), Image.NEAREST)
-            gt_im = None
-            if st.session_state["submode"] == "With Ground Truth" and stem in gt_map:
-                with contextlib.suppress(Exception):
-                    gt_im = to_gray(Image.open(gt_map[stem])).resize((w, h), Image.NEAREST)
+        # Per-image FOV from session mapping
+        fov_im = None
+        fov_entry = st.session_state["fov_by_stem"].get(stem)
+        if fov_entry:
+            with contextlib.suppress(Exception):
+                fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
 
-            # Live stages
-            stage_runner(stage, "Warming up…")
-            time.sleep(0.05)
+        # No GT uploader in this UI (leave metrics None unless you re-enable GT)
+        gt_im = None
 
-            t0 = time.time()
-            stage_runner(stage, "Preprocessing…")
-            # TODO: preprocess (resize/normalize/tile)
-            time.sleep(0.05)
+        # Live stages
+        stage_runner(stage, "Warming up…")
+        time.sleep(0.05)
 
-            if st.session_state["stop_flag"]:
-                break
-            stage_runner(stage, "Predicting…")
-            prob = model.infer(im)  # [H,W] float32 in [0,1]
-            time.sleep(0.05)
+        t0 = time.time()
+        stage_runner(stage, "Preprocessing…")
+        # TODO: your real preprocess (resize/normalize/tile)
+        time.sleep(0.05)
 
-            if st.session_state["stop_flag"]:
-                break
-            stage_runner(stage, "Post-processing…")
-            mask = (prob >= threshold).astype(np.uint8) * 255
-            total_ms = (time.time() - t0) * 1000.0
+        if st.session_state["stop_flag"]:
+            break
+        stage_runner(stage, "Predicting…")
+        prob = model.infer(im)  # [H,W] float32 in [0,1]
+        time.sleep(0.05)
 
-            # Metrics if GT
-            metrics = None
-            if gt_im is not None:
-                gt_bin  = (np.array(gt_im) > 127).astype(np.uint8)
-                pred    = (mask > 127).astype(np.uint8)
-                fov_bin = (np.array(fov_im) > 127).astype(np.uint8) if (fov_im is not None and st.session_state["submode"] == "With Ground Truth" and mask_outside_fov) else None
-                metrics = compute_basic_metrics(pred, gt_bin, fov_bin)
+        if st.session_state["stop_flag"]:
+            break
+        stage_runner(stage, "Post-processing…")
+        mask = (prob >= st.session_state.get("threshold", 0.5) if 'threshold' in st.session_state else prob >= 0.5).astype(np.uint8) * 255
+        total_ms = (time.time() - t0) * 1000.0
 
-            st.session_state["results"][stem] = {
-                "prob": prob, "mask": mask,
-                "timings": {"total_ms": total_ms},
-                "device": dev, "metrics": metrics
-            }
-            st.session_state["selected_stem"] = stem  # focus latest
-            stage_runner(stage, "Done.")
-            st.rerun()
+        # Metrics if GT (none here by default)
+        metrics = None
+        if gt_im is not None:
+            gt_bin  = (np.array(gt_im) > 127).astype(np.uint8)
+            pred    = (mask > 127).astype(np.uint8)
+            fov_bin = (np.array(fov_im) > 127).astype(np.uint8) if (fov_im is not None and st.session_state.get("submode") == "With Ground Truth" and st.session_state.get("mask_outside_fov", True)) else None
+            metrics = compute_basic_metrics(pred, gt_bin, fov_bin)
 
-        st.session_state["running"] = False
-        st.session_state["done_once"] = True
-        stage_runner(stage, "Idle.")
+        st.session_state["results"][stem] = {
+            "prob": prob, "mask": mask,
+            "timings": {"total_ms": total_ms},
+            "device": dev, "metrics": metrics
+        }
+        st.session_state["selected_stem"] = stem  # focus latest
+        stage_runner(stage, "Done.")
         st.rerun()
+
+    st.session_state["running"] = False
+    st.session_state["done_once"] = True
+    stage_runner(stage, "Idle.")
+    st.rerun()
 
 # ---------------------- Messages / Errors bottom ----------------------
 st.divider()
