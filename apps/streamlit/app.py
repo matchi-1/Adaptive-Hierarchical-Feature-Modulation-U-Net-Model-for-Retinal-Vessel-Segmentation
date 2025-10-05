@@ -199,23 +199,12 @@ with top:
     threshold = st.slider("Threshold", 0.0, 1.0, 0.5, 0.01, key="threshold")
     mask_outside_fov = st.checkbox("Mask outside FOV (metrics)", value=True, key="mask_outside_fov")
     st.divider()
-    btn_run = st.button("Run Inference", type="primary", use_container_width=True)
-    btn_stop = st.button("Stop", use_container_width=True, disabled=st.session_state["running"] is False)
-    if st.session_state["done_once"]:
-        btn_reset = st.button("Reset", use_container_width=True)
-    else:
-        btn_reset = False
+    
 
 with footer:
     render_telemetry_sidebar_footer()
 
-if btn_reset:
-    clear_session_outputs()
-    st.rerun()
 
-if btn_stop:
-    st.session_state["stop_flag"] = True
-    add_msg("info", "Stop requested; finishing current step…")
 
 # ---------------------- Main layout ----------------------
 st.markdown("#### Inputs")
@@ -375,6 +364,24 @@ with viewer:
                     st.info("Run inference to view probability map.")
                 with out_col:
                     st.info("Overlay will appear here after prediction.")
+
+    
+    btn_run = st.button("Run Inference", type="primary", use_container_width=True)
+    btn_stop = st.button("Stop", use_container_width=True, disabled=st.session_state["running"] is False)
+
+    
+    if st.session_state["done_once"]:
+        btn_reset = st.button("Reset", use_container_width=True)
+    else:
+        btn_reset = False
+
+    if btn_reset:
+        clear_session_outputs()
+        st.rerun()
+
+    if btn_stop:
+        st.session_state["stop_flag"] = True
+        add_msg("info", "Stop requested; finishing current step…")
 
 # ---------------------- Inference trigger ----------------------
 if btn_run and st.session_state.get("files_img") and (not st.session_state["running"]):
