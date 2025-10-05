@@ -207,6 +207,7 @@ with footer:
 
 
 # ---------------------- Main layout ----------------------
+st.markdown("####")
 st.markdown("#### Inputs")
 # Key includes nonce so deleting an image resets/clears the widget selection UI
 up1 = st.file_uploader(
@@ -259,9 +260,9 @@ if img_files:
     n = len(stems)
     st.session_state["sel_idx"] = max(0, min(st.session_state.get("sel_idx", 0), n - 1))
     idx = st.session_state["sel_idx"]
-
+    
+    st.divider()
     st.markdown("#### Selection")
-
     c_prev, c_mid, c_next = st.columns([1, 6, 1])
     with c_prev:
         if st.button("◀ Prev", use_container_width=True, disabled=(idx <= 0)):
@@ -280,7 +281,7 @@ if img_files:
     img = Image.open(file_obj).convert("RGB")
     is_selected = (st.session_state.get("selected_stem") == stem)
 
-    st.divider()
+    
     card = st.container(border=True)
     with card:
         top_cols = st.columns([2, 1])
@@ -354,18 +355,7 @@ with viewer:
         overlay_toggle = st.toggle("Show overlay", value=True, key="overlay_tog")
     with header_cols[2]:
         alpha = st.slider("Opacity", 0, 100, 50, key="alpha")/100.0 if overlay_toggle else 0.0
-    with header_cols[3]:
-        # Run/Stop moved here
-        btn_run_viewer = st.button("Run Inference", type="primary", use_container_width=True,
-                                   disabled=st.session_state["running"] or st.session_state.get("selected_stem") is None)
-        btn_stop_viewer = st.button("Stop", use_container_width=True,
-                                    disabled=(st.session_state["running"] is False))
-
-    # Allow stopping from viewer
-    if btn_stop_viewer:
-        st.session_state["stop_flag"] = True
-        add_msg("info", "Stop requested; finishing current step…")
-
+    
     stage = st.empty()  # live stage text “warming up / …”
     img_col, prob_col, out_col = st.columns([1, 1, 1])
 
@@ -432,6 +422,17 @@ with viewer:
                     st.info("Overlay will appear here after prediction.")
     else:
         st.info("No image selected. Choose one in the Selection gallery above.")
+
+    
+    btn_run_viewer = st.button("Run Inference", type="primary", use_container_width=True,
+                                disabled=st.session_state["running"] or st.session_state.get("selected_stem") is None)
+    btn_stop_viewer = st.button("Stop", use_container_width=True,
+                                    disabled=(st.session_state["running"] is False))
+
+    # Allow stopping from viewer
+    if btn_stop_viewer:
+        st.session_state["stop_flag"] = True
+        add_msg("info", "Stop requested; finishing current step…")
 
 # ---------------------- Inference trigger (viewer-scoped; runs on selected only) ----------------------
 if btn_run_viewer and (st.session_state.get("selected_stem") is not None) and (not st.session_state["running"]):
