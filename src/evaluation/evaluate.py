@@ -7,6 +7,17 @@ from src.training.metrics import *
 # helpers: normalize to numpy
 # ------------------------------
 
+def _resize_mask_like(mask_np: np.ndarray, ref_hw: tuple[int,int]) -> np.ndarray:
+    """
+    Resize a binary mask to (H,W) using nearest; returns uint8 {0,1}.
+    """
+    if tuple(mask_np.shape[-2:]) == tuple(ref_hw):
+        return (mask_np > 0.5).astype(np.uint8)
+    t = torch.from_numpy(mask_np)[None, None].float()
+    t = F.interpolate(t, size=ref_hw, mode="nearest")
+    return (t[0,0].cpu().numpy() > 0.5).astype(np.uint8)
+
+
 def _to_numpy_u8_2d(x) -> np.ndarray:
     """
     Compute micro-averaged metrics from pooled counts.
@@ -75,6 +86,11 @@ def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, com
 
     # Macro accumulators (sum values to later divide by image count)
     macro_sums = {
+        "Sensitivity": 0.0, "Specificity": 0.0, "Dice": 0.0, "Accuracy": 0.0,
+        "IoU": 0.0, "Precision": 0.0, "FPR": 0.0, "FDR": 0.0, 
+        "clDice": 0.0, "Dice_thin": 0.0, "Dice_thick": 0.0,
+    }
+    macro_sums_fov = {
         "Sensitivity": 0.0, "Specificity": 0.0, "Dice": 0.0, "Accuracy": 0.0,
         "IoU": 0.0, "Precision": 0.0, "FPR": 0.0, "FDR": 0.0, 
         "clDice": 0.0, "Dice_thin": 0.0, "Dice_thick": 0.0,
@@ -215,8 +231,8 @@ def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, com
     print("=== Test Set Evaluation Metrics ===")
     print("-- Macro (per-image mean) --")
     
-    for k in ["Sensitivity","Specificity","Dice","Accuracy","IoU","Precision","FPR","FDR",
-              "clDice","Dice_thin","Dice_thick","ROC_AUC","PR_AUC"]:
+    for k in ["Sensitivity","Specificity","clDice","Accuracy","Dice", "IoU","Precision","FPR","FDR",
+              "Dice_thin","Dice_thick","ROC_AUC","PR_AUC"]:
         
         if k in macro:
             print(f"{k:15s}: {macro[k]:.4f}")

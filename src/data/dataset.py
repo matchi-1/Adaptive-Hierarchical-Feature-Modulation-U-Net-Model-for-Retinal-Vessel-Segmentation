@@ -40,13 +40,23 @@ class FundusSegDataset(Dataset):
         gamma: float = 0.9,
         clahe_clip: float = 2.0,
         clahe_tiles: int = 8,
-    ):
+        patch_mode: bool = False,
+        patch_size: int = 512,
+        vessel_bias_p: float = 0.6,   # chance to center crop on vessel pixels
+        min_vessel_px: int = 64,
+        virtual_mult: int = 100
+        ):
         
         # save config/inputs on the instance for later use in __getitem__
         self.pairs = pairs
         self.size = image_size
         self.augs = augs
         self.strict_fov = strict_fov
+        self.patch_mode = patch_mode
+        self.patch_size = patch_size
+        self.vessel_bias_p = vessel_bias_p
+        self.min_vessel_px = min_vessel_px
+        self.virtual_mult = virtual_mult
 
         # configuration bundle for preprocess_image_retina
         self._pre_kw = dict(
@@ -59,10 +69,28 @@ class FundusSegDataset(Dataset):
 
     # tells PyTorch how many samples the dataset has (for indexing, batching)
     def __len__(self) -> int:
-        return len(self.pairs)
+        base = len(self.pairs)
+        return base * self.virtual_mult if self.patch_mode else base
 
     # ----- internal helpers -----
     
+    def _sample_center_uniform(self, fov_t, pad):
+        H, W = fov_t.shape[-2:]
+        # try up to N times to land inside FOV
+        for _ in range(64):
+            y = torch.randint(pad, H - pad, (1,)).item()
+            x = torch.randint(pad, W - pad, (1,)).item()
+            if fov_t[0, y, x] > 0.5: 
+                return y, x
+        return H // 2, W // 2  # fallback
+
+    def _sample_center_vessel(self, msk_t):
+        ys, xs = (msk_t[0] > 0.5).nonzero(as_tuple=True)
+        if len(ys) == 0:
+            return None
+        i = torch.randint(0, len(ys), (1,)).item()
+        return ys[i].item(), xs[i].item()
+
     # load a single fundus image and preprocess it into a normalized, square array
     def _load_image_hw(self, img_path: str) -> np.ndarray:
         x = preprocess_image_retina(img_path, **self._pre_kw)  # read image from disk, preprocess, return (1,H,W)
@@ -126,6 +154,36 @@ class FundusSegDataset(Dataset):
         # thresholds the mask/FOV to guarantee binary {0,1} values
         msk_t = (msk_t > 0.5).float()
         fov_t = (fov_t > 0.5).float()
+
+        if self.patch_mode:
+            ps = self.patch_size
+            pad = ps // 2
+            H, W = img_t.shape[-2:]
+
+            # choose a center (vessel-biased with probability p)
+            use_vessel = (torch.rand(1).item() < self.vessel_bias_p)
+            c = self._sample_center_vessel(msk_t) if use_vessel else None
+            if c is None:
+                cy, cx = self._sample_center_uniform(fov_t, pad)
+            else:
+                cy, cx = c
+
+            cy = max(pad, min(H - pad, cy))
+            cx = max(pad, min(W - pad, cx))
+            y0, y1 = cy - pad, cy + pad
+            x0, x1 = cx - pad, cx + pad
+
+            # slice patch (C,H,W)
+            img_t = img_t[:, y0:y1, x0:x1]
+            msk_t = msk_t[:, y0:y1, x0:x1]
+            fov_t = fov_t[:, y0:y1, x0:x1]
+
+            # optional: if we intended a vessel patch but it's empty, resample once uniformly
+            if use_vessel and (msk_t > 0.5).sum().item() < self.min_vessel_px:
+                cy, cx = self._sample_center_uniform(fov_t, pad)
+                cy = max(pad, min(H - pad, cy)); cx = max(pad, min(W - pad, cx))
+                y0, y1 = cy - pad, cy + pad; x0, x1 = cx - pad, cx + pad
+                img_t = img_full[:, y0:y1, x0:x1] if 'img_full' in locals() else img_t
 
         return {  # returns a structured dict for one training sample
             "image": img_t,   # preprocessed retina (float tensor [1,H,W])

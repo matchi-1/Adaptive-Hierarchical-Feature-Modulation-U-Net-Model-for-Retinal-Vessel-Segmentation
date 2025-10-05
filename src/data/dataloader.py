@@ -68,6 +68,12 @@ def make_loaders(
     gamma: float = 0.9,
     clahe_clip: float = 2.0,
     clahe_tiles: int = 8,
+
+    patch_train: bool = False,
+    patch_size: int = 512,
+    vessel_bias_p: float = 0.6,
+    min_vessel_px: int = 64,
+    virtual_mult: int = 100,
 ):
 
     """
@@ -108,7 +114,9 @@ def make_loaders(
         use_gamma = use_gamma,        
         gamma = gamma,
         clahe_clip = clahe_clip,
-        clahe_tiles = clahe_tiles
+        clahe_tiles = clahe_tiles,
+        patch_mode=patch_train, patch_size=patch_size,
+        vessel_bias_p=vessel_bias_p, min_vessel_px=min_vessel_px, virtual_mult=virtual_mult
     )
     val = FundusSegDataset(
         val_pairs,
@@ -118,7 +126,8 @@ def make_loaders(
         use_gamma = use_gamma,        
         gamma = gamma,
         clahe_clip = clahe_clip,
-        clahe_tiles = clahe_tiles
+        clahe_tiles = clahe_tiles,
+        patch_mode=False  # keep full images for validation
     )
 
     # call helper func to create seed for each worker process
