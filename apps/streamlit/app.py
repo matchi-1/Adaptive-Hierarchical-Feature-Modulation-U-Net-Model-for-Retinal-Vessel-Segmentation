@@ -228,15 +228,37 @@ up1 = st.file_uploader(
 )
 
 # Merge new uploads into our library, ignoring stems that were deleted
-if up1:
-    lib = {stem_of(f.name): f for f in st.session_state.get("files_img", [])}
-    deleted = st.session_state.get("deleted_stems", set())
+# --- Sync uploader content to library exactly (handles deletions in uploader UI) ---
+if up1 is not None:
+    # Current library (before sync)
+    old_map = {stem_of(f.name): f for f in st.session_state.get("files_img", [])}
+
+    # New library = exactly what's listed in the uploader (minus stems deleted from Selection)
+    new_items: list = []
+    new_stems: list = []
+    skip_stems = st.session_state.get("deleted_stems", set())  # stems deleted via Selection
+
     for f in up1:
         s = stem_of(f.name)
-        if s in deleted:
+        if s in skip_stems:
+            # If the user deleted it from Selection, ignore it even if still shown by the uploader
             continue
-        lib[s] = f
-    st.session_state["files_img"] = list(lib.values())
+        new_items.append(f)
+        new_stems.append(s)
+
+    # Anything that existed but is no longer in the uploader list is truly removed
+    removed_stems = set(old_map.keys()) - set(new_stems)
+    for s in removed_stems:
+        st.session_state["fov_by_stem"].pop(s, None)
+        st.session_state["results"].pop(s, None)
+        if st.session_state.get("selected_stem") == s:
+            st.session_state["selected_stem"] = None
+
+    # Commit the exact list, and keep pagination/index valid
+    st.session_state["files_img"] = new_items
+    n = len(new_items)
+    st.session_state["sel_idx"] = 0 if n == 0 else min(st.session_state.get("sel_idx", 0), n - 1)
+
 
 img_files = st.session_state["files_img"]
 
