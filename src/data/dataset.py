@@ -118,7 +118,11 @@ class FundusSegDataset(Dataset):
     
 # ----- main access -----
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        img_path, lab_path = self.pairs[idx]    # picks the (image_path, label_path) pair at index idx
+        if self.patch_mode:
+            base_idx = torch.randint(0, len(self.pairs), (1,)).item()
+        else:
+            base_idx = idx
+        img_path, lab_path = self.pairs[base_idx]    # picks the (image_path, label_path) pair at index idx
         
         img_hw = self._load_image_hw(img_path)          # load + preprocess image (no FOV yet)
         msk_hw = self._load_label_hw(lab_path)          # load vessel mask

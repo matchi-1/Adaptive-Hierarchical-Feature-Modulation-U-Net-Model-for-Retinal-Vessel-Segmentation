@@ -4,6 +4,7 @@ import torch.nn as nn
 
 
 from src.models.dpcn.dpcn_exp1 import DPCN as DPCN_Exp1
+from src.models.dpcn.dpcn_v2 import DPCN
 
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import (
     UNetWithMSU_HASSkip_CBAM_ASFG
