@@ -53,6 +53,8 @@ def init_state():
     ss.setdefault("running", False)
     ss.setdefault("stop_flag", False)
     ss.setdefault("done_once", False)
+    ss.setdefault("deleted_stems", set())              # <- NEW: keep stems that were deleted
+    ss.setdefault("uploader_nonce", 0)                 # <- NEW: bump to reset uploader widget
 init_state()
 
 # ---------------------- Helpers ----------------------
@@ -154,22 +156,23 @@ def stage_runner(stage_placeholder, text):
 
 # --- image delete in selection stem ---
 def delete_image_by_stem(stem: str):
-    """Remove image (and paired FOV/results) by stem, then rerun."""
+    """Remove image (and paired FOV/results) by stem, reset uploader, then rerun."""
+    # Remove from our library
     st.session_state["files_img"] = [
         f for f in st.session_state.get("files_img", []) if stem_of(f.name) != stem
     ]
-    # paired FOV
+    # Remember deletion so future uploads from the widget don't re-add it
+    st.session_state["deleted_stems"].add(stem)
+    # Remove paired FOV and results
     st.session_state["fov_by_stem"].pop(stem, None)
-    # any results
     st.session_state["results"].pop(stem, None)
-    # selection / pagination fixup
+    # Fix selection/pagination
     if st.session_state.get("selected_stem") == stem:
         st.session_state["selected_stem"] = None
     n = len(st.session_state.get("files_img", []))
-    if n == 0:
-        st.session_state["sel_idx"] = 0
-    else:
-        st.session_state["sel_idx"] = min(st.session_state["sel_idx"], n - 1)
+    st.session_state["sel_idx"] = 0 if n == 0 else min(st.session_state["sel_idx"], n - 1)
+    # Reset uploader widget so its visual list clears
+    st.session_state["uploader_nonce"] += 1
     st.rerun()
 
 def clear_session_outputs():
@@ -181,6 +184,8 @@ def clear_session_outputs():
     st.session_state["done_once"] = False
     st.session_state["sel_idx"] = 0
     st.session_state["fov_by_stem"] = {}
+    st.session_state["deleted_stems"] = set()
+    st.session_state["uploader_nonce"] += 1  # also reset uploader
 
 # ---------------------- Sidebar (top controls + sticky footer) ----------------------
 top = st.sidebar.container()
@@ -190,8 +195,9 @@ with top:
     model_mode = st.selectbox("Top Mode", ["Single Model (MATFHI)", "Comparison (UNet vs MATFHI)"],
                               index=0, key="mode_top")
     submode = st.radio("Run Mode", ["Predict Only", "With Ground Truth"], key="submode")
-    threshold = st.slider("Threshold", 0.0, 1.0, 0.5, 0.01)
-    mask_outside_fov = st.checkbox("Mask outside FOV (metrics)", value=True)
+    # add keys so inference can read them reliably
+    threshold = st.slider("Threshold", 0.0, 1.0, 0.5, 0.01, key="threshold")
+    mask_outside_fov = st.checkbox("Mask outside FOV (metrics)", value=True, key="mask_outside_fov")
     st.divider()
     btn_run = st.button("Run Inference", type="primary", use_container_width=True)
     btn_stop = st.button("Stop", use_container_width=True, disabled=st.session_state["running"] is False)
@@ -213,31 +219,36 @@ if btn_stop:
 
 # ---------------------- Main layout ----------------------
 st.markdown("#### Inputs")
+# Key includes nonce so deleting an image resets/clears the widget selection UI
 up1 = st.file_uploader(
     "Fundus images (batch upload)",
     type=["png","jpg","jpeg","tif"],
     accept_multiple_files=True,
-    key="u1"
+    key=f"u1_{st.session_state['uploader_nonce']}"
 )
 
-# Keep uploaded files in session (so Reset can clear them)
-if up1 is not None:
-    st.session_state["files_img"] = up1
+# Merge new uploads into our library, ignoring stems that were deleted
+if up1:
+    lib = {stem_of(f.name): f for f in st.session_state.get("files_img", [])}
+    deleted = st.session_state.get("deleted_stems", set())
+    for f in up1:
+        s = stem_of(f.name)
+        if s in deleted:
+            continue
+        lib[s] = f
+    st.session_state["files_img"] = list(lib.values())
 
 img_files = st.session_state["files_img"]
 
-# ---------------------- Selection (one-by-one with pagination + per-image FOV) ----------------------
+# ---------------------- Selection (Prev/Next; no slider) ----------------------
 if img_files:
     stems = [stem_of(f.name) for f in img_files]
     n = len(stems)
-
-    # Bound the current index
     st.session_state["sel_idx"] = max(0, min(st.session_state.get("sel_idx", 0), n - 1))
     idx = st.session_state["sel_idx"]
 
     st.markdown("#### Selection")
 
-    # Pagination controls
     c_prev, c_mid, c_next = st.columns([1, 6, 1])
     with c_prev:
         if st.button("◀ Prev", use_container_width=True, disabled=(idx <= 0)):
@@ -245,10 +256,6 @@ if img_files:
             st.rerun()
     with c_mid:
         st.write(f"Image {idx+1}/{n}")
-        new_idx = st.slider("Go to", 1, n, idx+1, key="sel_slider", label_visibility="collapsed")
-        if new_idx - 1 != idx:
-            st.session_state["sel_idx"] = new_idx - 1
-            st.rerun()
     with c_next:
         if st.button("Next ▶", use_container_width=True, disabled=(idx >= n - 1)):
             st.session_state["sel_idx"] = min(n - 1, idx + 1)
@@ -288,11 +295,11 @@ if img_files:
                 st.caption("No FOV paired.")
 
             st.divider()
-            # Delete image (also drops paired FOV/results)
+            # Delete image (also drops paired FOV/results) and resets uploader widget
             if st.button("Delete Image", key=f"del_img_{stem}", use_container_width=True):
                 delete_image_by_stem(stem)
 
-    # Always drive the viewer from the current page selection
+    # Viewer follows current page selection
     st.session_state["selected_stem"] = stem
 
 # ---------------------- Viewer & status ----------------------
@@ -312,7 +319,6 @@ with viewer:
 
     sel_stem = st.session_state.get("selected_stem")
     if sel_stem:
-        # find file for selected stem
         img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
         if img_file is None:
             st.warning("Selected image not found.")
@@ -328,18 +334,14 @@ with viewer:
 
             res = st.session_state["results"].get(sel_stem)
             if res:
-                # probability map
                 with prob_col:
                     prob = res["prob"]
                     st.image(prob, caption="Probability", use_container_width=True, clamp=True)
-                # overlay
                 with out_col:
                     overlay_rgb = colorize_mask(res["mask"])
                     blended = blend(np.array(img), overlay_rgb, alpha) if overlay_toggle else np.array(img)
                     try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
                 st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
-
-                # Metrics (if GT and computed; GT UI is disabled in this screen)
                 if res.get("metrics"):
                     m = res["metrics"]
                     st.markdown(
@@ -353,16 +355,16 @@ with viewer:
                     st.info("Overlay will appear here after prediction.")
 
 # ---------------------- Inference trigger ----------------------
-if btn_run and img_files and (not st.session_state["running"]):
+if btn_run and st.session_state.get("files_img") and (not st.session_state["running"]):
     st.session_state["running"] = True
     st.session_state["stop_flag"] = False
     add_msg("info", "Starting inference run.")
-    # Load model (MATFHI for this tab; UNet later for comparison)
     dev = device_label()
     model = load_model("MATFHI", device=dev)
 
-    # loop images
-    for f in img_files:
+    thr = st.session_state.get("threshold", 0.5)
+
+    for f in st.session_state["files_img"]:
         if st.session_state["stop_flag"]:
             break
         stem = stem_of(f.name)
@@ -376,8 +378,7 @@ if btn_run and img_files and (not st.session_state["running"]):
             with contextlib.suppress(Exception):
                 fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
 
-        # No GT uploader in this UI (leave metrics None unless you re-enable GT)
-        gt_im = None
+        gt_im = None  # GT disabled in this screen
 
         # Live stages
         stage_runner(stage, "Warming up…")
@@ -385,7 +386,6 @@ if btn_run and img_files and (not st.session_state["running"]):
 
         t0 = time.time()
         stage_runner(stage, "Preprocessing…")
-        # TODO: your real preprocess (resize/normalize/tile)
         time.sleep(0.05)
 
         if st.session_state["stop_flag"]:
@@ -397,16 +397,11 @@ if btn_run and img_files and (not st.session_state["running"]):
         if st.session_state["stop_flag"]:
             break
         stage_runner(stage, "Post-processing…")
-        mask = (prob >= st.session_state.get("threshold", 0.5) if 'threshold' in st.session_state else prob >= 0.5).astype(np.uint8) * 255
+        mask = (prob >= thr).astype(np.uint8) * 255
         total_ms = (time.time() - t0) * 1000.0
 
         # Metrics if GT (none here by default)
         metrics = None
-        if gt_im is not None:
-            gt_bin  = (np.array(gt_im) > 127).astype(np.uint8)
-            pred    = (mask > 127).astype(np.uint8)
-            fov_bin = (np.array(fov_im) > 127).astype(np.uint8) if (fov_im is not None and st.session_state.get("submode") == "With Ground Truth" and st.session_state.get("mask_outside_fov", True)) else None
-            metrics = compute_basic_metrics(pred, gt_bin, fov_bin)
 
         st.session_state["results"][stem] = {
             "prob": prob, "mask": mask,
