@@ -8,7 +8,8 @@ import math
 from src.models.blocks.msu import MSU
 from src.models.blocks.cbam import CBAM
 from src.models.unet import ConvBlock  # only for the final head's small convs if you prefer; safe to keep
-from src.models.unet_exp.base_unet_r2n50_msu_cbam_hasskip import build_res2net50  # <- Res2Net-50 factory
+from src.models.unet_exp.base_unet_ablations.base_unet_r2n50_msu_cbam_hasskip import build_res2net50  # <- Res2Net-50 factory
+
 
 
 # ----------------- utils -----------------
@@ -183,7 +184,12 @@ class AdaptiveSelectiveFusionGate(nn.Module):
 
     def forward(self, f_msu, f_has):
         # third branch: residual CBAM on HAS
+        if f_msu.shape[-2:] != f_has.shape[-2:]:
+            f_msu = F.interpolate(f_msu, size=f_has.shape[-2:], mode="bilinear", align_corners=False)
+
         f_cbm = self.rcbam(f_has)
+        if f_cbm.shape[-2:] != f_has.shape[-2:]:
+            f_cbm = F.interpolate(f_cbm, size=f_has.shape[-2:], mode="bilinear", align_corners=False)
 
         # descriptors (global, cheap)
         dm = self._gap_abs(f_msu)    # (B,C)
@@ -286,6 +292,14 @@ class UNetWithMSU_HASSkip_CBAM_ASFG_R2N50(nn.Module):
             channels=128, reduction=cbam_reduction, use_spatial_cbam=True,
             tau=1.2, prior_logits=(-0.2, +0.2, +0.7), edge_boost_gain=0.0, agree_boost_gain=0.5
         )
+        
+        #project FMSU_d2 (1024) -> 512 to match FSKIP_d2
+        self.proj_msu_d2 = nn.Conv2d(1024, 512, kernel_size=1, bias=False)
+        self.proj_msu_d3 = nn.Conv2d( 512, 256, kernel_size=1, bias=False)
+        self.proj_msu_d4 = nn.Conv2d( 256, 128, kernel_size=1, bias=False)
+        nn.init.kaiming_normal_(self.proj_msu_d2.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.proj_msu_d3.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.proj_msu_d4.weight, nonlinearity='relu')
 
         # Decoder
         self.d1 = DecoderBlockFlex(in_ch=2048, skip_ch=1024, out_ch=1024)  # H/32 → H/16
@@ -300,6 +314,7 @@ class UNetWithMSU_HASSkip_CBAM_ASFG_R2N50(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        H, W = x.shape[-2:]                     # <- cache input size
         x = self.input_adapter(x)
         c2, c3, c4, c5 = self.backbone.forward_features(x)   # 256, 512, 1024, 2048
 
@@ -325,17 +340,29 @@ class UNetWithMSU_HASSkip_CBAM_ASFG_R2N50(nn.Module):
         FB1 = self.asfg_d1(FMSU_d1, FSKIP_d1)
         d1  = self.d1(c5b, FB1)                                           # 1024 @ H/16
 
-        FSKIP_d2 = self.has.forward_level(1, [c2,c3,c4,c5], d1, c4)       # 512 @ H/16
-        FB2 = self.asfg_d2(_resize_like(FMSU_d2, d1) + 0*FB1, FSKIP_d2)   # (FMSU_d2 aligned) vs HAS
-        d2  = self.d2(d1, FB2)                                            # 512 @ H/8
+        # d2: 1024 → 512
+        FSKIP_d2      = self.has.forward_level(1, [c2,c3,c4,c5], d1, c4)              # (B,512, H/16, W/16)
+        FMSU_d2_align = _resize_like(FMSU_d2, d1)                                     # (B,1024,H/16,W/16)
+        FMSU_d2_proj  = self.proj_msu_d2(FMSU_d2_align)                               # (B,512, H/16, W/16)
+        FB2 = self.asfg_d2(FMSU_d2_proj, FSKIP_d2)
+        d2  = self.d2(d1, FB2)
 
-        FSKIP_d3 = self.has.forward_level(2, [c2,c3,c4,c5], d2, c3)       # 256 @ H/8
-        FB3 = self.asfg_d3(_resize_like(FMSU_d3, d2), FSKIP_d3)
-        d3  = self.d3(d2, FB3)                                            # 256 @ H/4
+        # d3: 512 → 256
+        FSKIP_d3      = self.has.forward_level(2, [c2,c3,c4,c5], d2, c3)              # (B,256,H/8,W/8)
+        FMSU_d3_align = _resize_like(FMSU_d3, d2)                                     # (B,512,H/8,W/8)
+        FMSU_d3_proj  = self.proj_msu_d3(FMSU_d3_align)                               # (B,256,H/8,W/8)
+        FB3 = self.asfg_d3(FMSU_d3_proj, FSKIP_d3)
+        d3  = self.d3(d2, FB3)
 
-        FSKIP_d4 = self.has.forward_level(3, [c2,c3,c4,c5], d3, c2)       # 128 @ H/4
-        FB4 = self.asfg_d4(_resize_like(FMSU_d4, d3), FSKIP_d4)
-        d4  = self.d4(d3, FB4)                                            # 128 @ H/2
+        # d4: 256 → 128
+        FSKIP_d4      = self.has.forward_level(3, [c2,c3,c4,c5], d3, c2)              # (B,128,H/4,W/4)
+        FMSU_d4_align = _resize_like(FMSU_d4, d3)                                     # (B,256,H/4,W/4)
+        FMSU_d4_proj  = self.proj_msu_d4(FMSU_d4_align)                               # (B,128,H/4,W/4)
+        FB4 = self.asfg_d4(FMSU_d4_proj, FSKIP_d4)
+        d4  = self.d4(d3, FB4)
 
-        out = self.up_final(d4)                                            # 64  @ H
-        return self.head(out)                                              # 1   @ H
+        out = self.up_final(d4)
+        out = self.head(out)
+        if out.shape[-2:] != (H, W):            # <- defensive align
+            out = F.interpolate(out, size=(H, W), mode="bilinear", align_corners=False)
+        return out                                             # 1   @ H

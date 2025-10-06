@@ -30,17 +30,6 @@ def _resize_like(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
 # ===============================================================
 
 class Bottle2neck(nn.Module):
-    """
-    Res2Net bottleneck block.
-    Args:
-        inplanes: input channels
-        planes:   base channels (before expansion)
-        stride:   stride on 3x3 convs (applied on the first split path)
-        baseWidth: Res2Net base width (default 26)
-        scale:    number of splits (default 4)
-        stype:    'normal' or 'stage' (stage adds avgpool on identity)
-        expansion: output channels multiplier (ResNet bottleneck uses 4)
-    """
     expansion = 4
 
     def __init__(self,
@@ -55,26 +44,29 @@ class Bottle2neck(nn.Module):
         assert scale >= 1
         self.scale = scale
         self.stype = stype
+        self.stride = stride
 
         width = int(math.floor(planes * (baseWidth / 64.0)))
         channel = width * scale
 
-        # 1x1 reduce to grouped width
+        # 1x1 reduce
         self.conv1 = nn.Conv2d(inplanes, channel, kernel_size=1, bias=False)
         self.bn1   = nn.BatchNorm2d(channel)
-
-        # Scale paths: (scale-1) 3x3 convs + the last split either pass-through (normal) or avgpool (stage)
-        self.convs = nn.ModuleList([nn.Conv2d(width, width, kernel_size=3, stride=stride, padding=1, bias=False)
-                                    for _ in range(scale - 1)])
-        self.bns   = nn.ModuleList([nn.BatchNorm2d(width) for _ in range(scale - 1)])
         self.relu  = nn.ReLU(inplace=True)
 
-        # 1x1 expand back to planes*4
+        # (scale-1) conv branches; ONLY the first branch downsamples
+        self.convs = nn.ModuleList()
+        self.bns   = nn.ModuleList()
+        for i in range(scale - 1):
+            s_i = stride if i == 0 else 1
+            self.convs.append(nn.Conv2d(width, width, kernel_size=3, stride=s_i, padding=1, bias=False))
+            self.bns.append(nn.BatchNorm2d(width))
+
+        # 1x1 expand
         self.conv3 = nn.Conv2d(channel, planes * self.expansion, kernel_size=1, bias=False)
         self.bn3   = nn.BatchNorm2d(planes * self.expansion)
 
         self.downsample = downsample
-        self.stride     = stride
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -83,42 +75,31 @@ class Bottle2neck(nn.Module):
         out = self.bn1(out)
         out = self.relu(out)
 
-        # split along channel (scale chunks)
+        # split into 'scale' chunks along channels
         spx = torch.chunk(out, self.scale, dim=1)
 
-        y = []
-        for s in range(self.scale - 1):
-            if s == 0:
-                z = spx[s]
+        ys = []
+        for i in range(self.scale - 1):
+            if i == 0:
+                z = spx[i]                          # full-res
             else:
-                z = spx[s]
-            if self.stride > 1:
-            # downsample spx[s] to match y[s-1]
-                z = F.avg_pool2d(z, kernel_size=3, stride=self.stride, padding=1)
-                z = z + y[s - 1]
+                z = spx[i]
+                # ↓↓↓ key line: downsample current split when transitioning stages
+                if self.stride > 1:
+                    z = F.avg_pool2d(z, kernel_size=3, stride=self.stride, padding=1)
+                z = z + ys[i - 1]                   # shapes now match
 
-
-            z = self.convs[s](z) # this conv already has stride=self.stride for s==0 in your build
-            z = self.bns[s](z)
+            z = self.convs[i](z)                    # convs[0] has stride=self.stride, others stride=1
+            z = self.bns[i](z)
             z = self.relu(z)
-            y.append(z)
+            ys.append(z)
 
+        # last split: identity or pooled for stage transition
+        last = spx[-1]
+        if self.stype == 'stage' and self.stride > 1:
+            last = F.avg_pool2d(last, kernel_size=3, stride=self.stride, padding=1)
 
-        # last split remains as in 'stage' type
-        if self.scale > 1:
-            if self.stype == 'stage':
-                y.append(F.avg_pool2d(spx[-1], kernel_size=3, stride=self.stride, padding=1))
-            else:
-                y.append(spx[-1])
-
-        if self.scale > 1:
-            # last split: either identity or avg-pooled (for stage transition)
-            if self.stype == 'stage':
-                y.append(F.avg_pool2d(spx[-1], kernel_size=3, stride=self.stride, padding=1))
-            else:
-                y.append(spx[-1])
-
-        out = torch.cat(y, dim=1)
+        out = torch.cat(ys + [last], dim=1)         # width * scale
 
         out = self.conv3(out)
         out = self.bn3(out)
@@ -129,6 +110,7 @@ class Bottle2neck(nn.Module):
         out += identity
         out  = self.relu(out)
         return out
+
 
 
 class Res2Net(nn.Module):
