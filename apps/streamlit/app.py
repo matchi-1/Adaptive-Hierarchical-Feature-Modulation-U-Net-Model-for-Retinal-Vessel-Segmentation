@@ -137,10 +137,11 @@ def caption_with_size(label: str, im: Image.Image) -> str:
     return f"{label}   |  {w} × {h}px |"
 
 @st.cache_resource
-def load_seg_model(device: str = "auto", dataset: Optional[str] = None):
+def load_seg_model(device: str = "auto", dataset: Optional[str] = None, ckpt_key: Optional[str] = None):
     dev = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
     if device != "auto":
         dev = device
+
     ds = dataset or st.session_state.get("dataset_choice", "DRIVE")
     ckpt = DATASET_CHECKPOINTS.get(ds)
     if ckpt is None or not ckpt.exists():
@@ -155,8 +156,15 @@ def load_seg_model(device: str = "auto", dataset: Optional[str] = None):
     ).to(dev).eval()
 
     state = torch.load(ckpt, map_location=dev)
+    # be robust to different save styles
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
     model.load_state_dict(state, strict=True)
-    return model, dev
+
+    # expose some debug info
+    meta = {"dataset": ds, "ckpt_path": str(ckpt)}
+    return (model, dev, meta)
+
 
 def load_fov_1hw_from_bytes(fov_bytes: bytes, target_hw: tuple[int, int]) -> np.ndarray:
     """Return np.float32 array shaped [1,H,W] in {0,1} resized to target_hw."""
@@ -655,7 +663,10 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
         st.session_state["stop_flag"] = False
 
         # Load model (cached)
-        model, dev = load_seg_model()
+        ds = st.session_state.get("dataset_choice", "DRIVE")
+        IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
+
+        model, dev, meta = load_seg_model(dataset=ds, ckpt_key=str(DATASET_CHECKPOINTS[ds]))
 
         # 1) Preprocess (grayscale + retina preprocessing)
         stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
