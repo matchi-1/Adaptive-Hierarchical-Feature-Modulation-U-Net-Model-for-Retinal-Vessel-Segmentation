@@ -56,6 +56,9 @@ def init_state():
     ss.setdefault("deleted_stems", set())              # <- NEW: keep stems that were deleted
     ss.setdefault("uploader_nonce", 0)                 # <- NEW: bump to reset uploader widget
     ss.setdefault("fov_uploader_nonce", {})   # per-stem nonce to reset FOV uploader
+    ss.setdefault("overlay_tog", False)
+    ss.setdefault("overlay_reset", False)
+
 
 init_state()
 
@@ -382,6 +385,12 @@ with viewer:
         with predicted_header_vessel_map_cols[0]:
             st.markdown("#### Predicted Vessel Map")
         with predicted_header_vessel_map_cols[1]:
+            
+            if st.session_state.pop("overlay_reset", False):
+                # reset the toggle & alpha on the next render, before widget creation
+                st.session_state.pop("overlay_tog", None)  # remove so toggle starts fresh (False)
+                st.session_state.pop("alpha", None)
+
             overlay_toggle = st.toggle("Overlay", key="overlay_tog", disabled=not has_result)
         
     
@@ -496,8 +505,7 @@ with viewer:
     # Clear only the preprocessed & prediction for the selected image
     if btn_clear_viewer and sel_stem:
         st.session_state["results"].pop(sel_stem, None)
-        st.session_state["overlay_tog"] = False
-        st.session_state.pop("alpha", None)
+        st.session_state["overlay_reset"] = True
         st.rerun()
 
     # Allow stopping from viewer
