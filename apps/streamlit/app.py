@@ -359,6 +359,16 @@ if img_files:
 st.divider()
 viewer = st.container()
 with viewer:
+    
+    sel_stem = st.session_state.get("selected_stem")
+    has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
+
+    # make sure the selected stem actually exists in the current file list
+    has_selected_file = bool(
+        sel_stem and any(stem_of(f.name) == sel_stem for f in img_files)
+    )
+
+        
     # --- compute selection/result state BEFORE building header controls ---
     sel_stem = st.session_state.get("selected_stem")
     has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
@@ -405,10 +415,14 @@ with viewer:
             # Results panes if exist
             res = st.session_state["results"].get(sel_stem)
             if res:
+                # Middle column = Preprocessed Image
                 with prob_col:
-                    prob = res["prob"]
-                    st.image(prob, caption="Probability", use_container_width=True, clamp=True)
-                    st.markdown("#")
+                    pre_img = res.get("pre")
+                    if pre_img is not None:
+                        st.image(pre_img, caption="Preprocessed Image", use_container_width=True, clamp=True)
+                        st.markdown("#")
+                    else:
+                        st.warning("No preprocessed image saved.")
                 with out_col:
                     overlay_on = has_result and st.session_state.get("overlay_tog", False)
 
@@ -420,7 +434,7 @@ with viewer:
                     blended = blend(np.array(img), overlay_rgb, alpha) if overlay_on else np.array(img)
 
                     # 1) Show the image first
-                    try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
+                    try_zoomable("Overlay (zoomable)" if zoomable_image else "Predicted Vessel Map (w/ Overlay)", Image.fromarray(blended)) # this shouldnt have (w/ overlay) if its still disabled
 
                     # 2) Only then show the slider — and only if overlay is actually ON
                     if overlay_on:
@@ -459,10 +473,32 @@ with viewer:
         st.info("No image selected. Choose one in the Selection gallery above.")
 
     
-    btn_run_viewer = st.button("Run Inference", type="primary", use_container_width=True,
-                                disabled=st.session_state["running"] or st.session_state.get("selected_stem") is None)
-    btn_stop_viewer = st.button("Stop", use_container_width=True,
-                                    disabled=(st.session_state["running"] is False))
+    btn_run_viewer = st.button(
+        "Run Inference",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.get("running", False) or not has_selected_file
+    )
+
+    btn_stop_viewer = st.button(
+        "Stop",
+        use_container_width=True,
+        disabled=(not st.session_state.get("running", False))
+    )
+
+    btn_clear_viewer = st.button(
+        "Clear",
+        use_container_width=True,
+        disabled=not has_result
+    )
+
+
+    # Clear only the preprocessed & prediction for the selected image
+    if btn_clear_viewer and sel_stem:
+        st.session_state["results"].pop(sel_stem, None)
+        st.session_state["overlay_tog"] = False
+        st.session_state.pop("alpha", None)
+        st.rerun()
 
     # Allow stopping from viewer
     if btn_stop_viewer:
@@ -470,70 +506,58 @@ with viewer:
         add_msg("info", "Stop requested; finishing current step…")
 
 # ---------------------- Inference trigger (viewer-scoped; runs on selected only) ----------------------
-if btn_run_viewer and (st.session_state.get("selected_stem") is not None) and (not st.session_state["running"]):
+if btn_run_viewer and has_selected_file and (not st.session_state.get("running", False)):
     sel_stem = st.session_state["selected_stem"]
     img_file = next((f for f in st.session_state["files_img"] if stem_of(f.name) == sel_stem), None)
-
     if img_file is None:
         add_msg("error", "Selected image not found.")
     else:
         st.session_state["running"] = True
         st.session_state["stop_flag"] = False
-        add_msg("info", f"Starting inference for **{img_file.name}**.")
-        dev = device_label()
-        model = load_model("MATFHI", device=dev)
-        thr = st.session_state.get("threshold", 0.5)
+        try:
+            add_msg("info", f"Starting inference for **{img_file.name}**.")
+            dev = device_label()
+            model = load_model("MATFHI", device=dev)
+            thr = st.session_state.get("threshold", 0.5)
 
-        im = pil_from_upload(img_file)
-        w, h = im.size
+            im = pil_from_upload(img_file)
+            w, h = im.size
 
-        # Per-image FOV from session mapping
-        fov_im = None
-        fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-        if fov_entry:
-            with contextlib.suppress(Exception):
-                fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
+            fov_im = None
+            fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+            if fov_entry:
+                with contextlib.suppress(Exception):
+                    fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
 
-        # Live stages
-        stage_runner(stage, "Warming up…"); time.sleep(0.05)
-        t0 = time.time()
-        stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
-        if st.session_state["stop_flag"]:
-            stage_runner(stage, "Stopped.")
-        else:
+            stage_runner(stage, "Warming up…"); time.sleep(0.05)
+            t0 = time.time()
+            stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
+            if st.session_state["stop_flag"]:
+                stage_runner(stage, "Stopped.")
+                pass  
+
             stage_runner(stage, "Predicting…")
-            prob = model.infer(im)  # [H,W] float32 in [0,1]
-            time.sleep(0.05)
+            prob = model.infer(im); time.sleep(0.05)
 
             stage_runner(stage, "Post-processing…")
             mask = (prob >= thr).astype(np.uint8) * 255
+            pre_img = np.array(to_gray(im))
             total_ms = (time.time() - t0) * 1000.0
 
             st.session_state["results"][sel_stem] = {
-                "prob": prob, "mask": mask,
+                "prob": prob,
+                "mask": mask,
+                "pre": pre_img,
                 "timings": {"total_ms": total_ms},
-                "device": dev, "metrics": None
+                "device": dev,
+                "metrics": None,
             }
             stage_runner(stage, "Done.")
+        finally:
+            st.session_state["running"] = False
+            st.session_state["done_once"] = True
+            st.rerun()
 
-        st.session_state["running"] = False
-        st.session_state["done_once"] = True
-        st.rerun()
-
-
-# ---------------------- Messages / Errors bottom ----------------------
-st.divider()
-st.markdown("#### Messages")
-if not st.session_state["messages"]:
-    st.caption("No messages yet.")
-else:
-    for m in st.session_state["messages"]:
-        if m["kind"] == "error":
-            st.error(m["text"])
-        elif m["kind"] == "warn":
-            st.warning(m["text"])
-        else:
-            st.info(m["text"])
 
 # ---------------------- Comparison tab scaffold ----------------------
 if st.session_state["mode_top"] == "Comparison (UNet vs MATFHI)":
