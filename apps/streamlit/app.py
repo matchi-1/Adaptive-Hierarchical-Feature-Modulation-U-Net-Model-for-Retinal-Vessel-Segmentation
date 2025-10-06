@@ -361,13 +361,18 @@ if img_files:
 st.divider()
 viewer = st.container()
 with viewer:
-    header_cols = st.columns([1.1, 1.1, 1.1, 0.9])
+    header_cols = st.columns([1, 1, 1])
     with header_cols[0]:
-        st.markdown("### Viewer")
+        st.markdown("#### Selected Raw Image")
     with header_cols[1]:
-        overlay_toggle = st.toggle("Show overlay", value=True, key="overlay_tog")
+        st.markdown("#### Preprocessed Image")
     with header_cols[2]:
-        alpha = st.slider("Opacity", 0, 100, 50, key="alpha")/100.0 if overlay_toggle else 0.0
+        predicted_header_vessel_map_cols = st.columns([2, 1])
+        with predicted_header_vessel_map_cols[0]:
+            st.markdown("#### Predicted Vessel Map")
+        with predicted_header_vessel_map_cols[1]:
+            overlay_toggle = st.toggle("Overlay", value=True, key="overlay_tog")
+        
     
     stage = st.empty()  # live stage text “warming up / …”
     img_col, prob_col, out_col = st.columns([1, 1, 1])
@@ -415,9 +420,10 @@ with viewer:
                     )
             else:
                 with prob_col:
-                    st.info("Run inference to view probability map.")
+                    st.warning("⚠️ Run inference to view preprocessed image.")
                 with out_col:
-                    st.info("Overlay will appear here after prediction.")
+                    st.warning("⚠️ Run inference to view probability map.")
+                    alpha = st.slider("Opacity", 0, 100, 50, key="alpha")/100.0 if overlay_toggle else 0.0
     else:
         st.info("No image selected. Choose one in the Selection gallery above.")
 
