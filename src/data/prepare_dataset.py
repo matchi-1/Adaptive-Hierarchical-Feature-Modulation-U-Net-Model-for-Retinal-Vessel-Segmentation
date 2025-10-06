@@ -122,6 +122,7 @@ def build_all_train_pairs(
     raw_root: str = "../data/raw",  # top-level folder where all datasets live
     datasets=("DRIVE", "CHASEDB1", "STARE"),
     label_folder: str = "1st_manual",
+    split = "training"
 ) -> List[Tuple[str, str]]:  # returns a flat list of (image_path, label_path) pairs across all datasets
     
     """
@@ -132,7 +133,7 @@ def build_all_train_pairs(
     # iterate through each dataset (DRIVE, CHASEDB1, STARE)
     for ds in datasets:
         ds_root = str(Path(raw_root) / ds)  # build the path to that dataset’s folder;  if raw_root="../data/raw" and ds="DRIVE", → ds_root = "../data/raw/DRIVE".
-        pairs = build_pairs_for_split(ds_root, split="training", label_folder=label_folder) # get the (image, label) pairs for that dataset’s training split
+        pairs = build_pairs_for_split(ds_root, split=split, label_folder=label_folder) # get the (image, label) pairs for that dataset’s training split
         out.extend(pairs) # add those pairs to the master list
     return out
 
