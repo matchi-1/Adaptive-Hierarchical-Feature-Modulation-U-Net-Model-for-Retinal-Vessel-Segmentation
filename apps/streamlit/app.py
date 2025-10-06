@@ -72,6 +72,7 @@ def init_state():
     ss.setdefault("uploader_nonce", 0)                 # <- NEW: bump to reset uploader widget
     ss.setdefault("fov_uploader_nonce", {})   # per-stem nonce to reset FOV uploader
     ss.setdefault("overlay_tog", False)
+    ss.setdefault("fov_tog", False)
     ss.setdefault("overlay_reset", False)
     ss.setdefault("gt_by_stem", {})  
 
@@ -182,6 +183,14 @@ def stage_runner(stage_placeholder, text):
         f"<div class='status-ribbon'><b>Status:</b> {text}</div>",
         unsafe_allow_html=True
     )
+
+def fov_bin_from_bytes(fov_bytes: bytes, out_wh: tuple[int, int]) -> np.ndarray:
+    """Load FOV bytes → grayscale → resize → hard-binarize (0/1)."""
+    im = Image.open(io.BytesIO(fov_bytes)).convert("L").resize(out_wh, Image.NEAREST)
+    arr = np.array(im, dtype=np.uint8)
+    # force binary; >127 becomes inside-FOV (1), else 0
+    return (arr > 127).astype(np.uint8)  # [H,W] in {0,1}
+
 
 # --- image delete in selection stem ---
 def delete_image_by_stem(stem: str):
@@ -405,9 +414,23 @@ with viewer:
     # --- compute selection/result state BEFORE building header controls ---
     sel_stem = st.session_state.get("selected_stem")
     has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
+
+    # do we actually have a paired FOV for the selected image?
+    fov_entry_hdr = st.session_state.get("fov_by_stem", {}).get(sel_stem)
+    has_fov_for_sel = bool(fov_entry_hdr and fov_entry_hdr.get("bytes"))
+
     header_cols = st.columns([1, 1, 1])
     with header_cols[0]:
-        st.markdown("#### Selected Raw Image")
+        raw_header_cols = st.columns([3, 1])
+        with raw_header_cols[0]:
+            st.markdown("#### Selected Raw Image")
+        with raw_header_cols[1]:
+            # Only render the toggle if a FOV is paired; otherwise clear stale state
+            if has_fov_for_sel:
+                st.toggle("FOV", key="fov_tog")
+            else:
+                st.session_state.pop("fov_tog", None)
+
     with header_cols[1]:
         st.markdown("#### Preprocessed Image")
     with header_cols[2]:
@@ -415,13 +438,11 @@ with viewer:
         with predicted_header_vessel_map_cols[0]:
             st.markdown("#### Predicted Vessel Map")
         with predicted_header_vessel_map_cols[1]:
-            
             if st.session_state.pop("overlay_reset", False):
-                # reset the toggle & alpha on the next render, before widget creation
-                st.session_state.pop("overlay_tog", None)  # remove so toggle starts fresh (False)
+                st.session_state.pop("overlay_tog", None)
                 st.session_state.pop("alpha", None)
+            st.toggle("Overlay", key="overlay_tog", disabled=not has_result)
 
-            overlay_toggle = st.toggle("Overlay", key="overlay_tog", disabled=not has_result)
         
     
     stage = st.empty()  # live stage text “warming up / …”
@@ -436,18 +457,24 @@ with viewer:
         else:
             img = pil_from_upload(img_file)
             
-            # --- Viewer: Original + FOV (display-only) ---
+            # --- Viewer: Original + FOV overlay ---
             with img_col:
-                try_zoomable("Original (zoomable)" if zoomable_image else "Original", img)
+                # Start from the raw uploaded image (RGB)
+                base_pil = img  
+                W0, H0 = base_pil.size
 
-                fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                # If FOV exists and toggle is ON: black out pixels outside the FOV
+                fov_entry = st.session_state.get("fov_by_stem", {}).get(sel_stem)
+                if fov_entry and st.session_state.get("fov_tog", False):
+                    fov01 = fov_bin_from_bytes(fov_entry["bytes"], (W0, H0))  # [H0,W0] in {0,1}
+                    base_rgb = np.array(base_pil, dtype=np.uint8)             # [H0,W0,3]
+                    # keep vessels/retina as-is inside FOV; set outside to black
+                    base_rgb[fov01 == 0] = 0
+                    show_pil = Image.fromarray(base_rgb)
+                    try_zoomable("Original (FOV applied)", show_pil)
+                else:
+                    try_zoomable("Original", base_pil)
 
-                with st.expander(f"FOV for {sel_stem}", expanded=False):
-                    if fov_entry:
-                        # show just the FOV image (no "paired" caption)
-                        st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
-                    else:
-                        st.caption("No FOV paired.")
 
            
 
