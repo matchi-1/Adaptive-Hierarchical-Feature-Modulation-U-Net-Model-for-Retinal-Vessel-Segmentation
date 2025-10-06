@@ -359,6 +359,9 @@ if img_files:
 st.divider()
 viewer = st.container()
 with viewer:
+    # --- compute selection/result state BEFORE building header controls ---
+    sel_stem = st.session_state.get("selected_stem")
+    has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
     header_cols = st.columns([1, 1, 1])
     with header_cols[0]:
         st.markdown("#### Selected Raw Image")
@@ -369,13 +372,13 @@ with viewer:
         with predicted_header_vessel_map_cols[0]:
             st.markdown("#### Predicted Vessel Map")
         with predicted_header_vessel_map_cols[1]:
-            overlay_toggle = st.toggle("Overlay", value=True, key="overlay_tog")
+            overlay_toggle = st.toggle("Overlay", key="overlay_tog", disabled=not has_result)
         
     
     stage = st.empty()  # live stage text “warming up / …”
     img_col, prob_col, out_col = st.columns([1, 1, 1])
 
-    sel_stem = st.session_state.get("selected_stem")
+    #sel_stem = st.session_state.get("selected_stem")
     if sel_stem:
         # Find file for selected stem
         img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
@@ -406,9 +409,16 @@ with viewer:
                     prob = res["prob"]
                     st.image(prob, caption="Probability", use_container_width=True, clamp=True)
                 with out_col:
+                    # Opacity slider: only enabled if we have a result AND overlay is ON
+                    alpha_raw = st.slider("Opacity", 0, 100, 50, key="alpha",
+                                        disabled=not (has_result and st.session_state.get("overlay_tog", False)))
+                    alpha = (alpha_raw / 100.0) if (has_result and st.session_state.get("overlay_tog", False)) else 0.0
+
                     overlay_rgb = colorize_mask(res["mask"])
-                    blended = blend(np.array(img), overlay_rgb, alpha) if overlay_toggle else np.array(img)
+                    blended = blend(np.array(img), overlay_rgb, alpha) if st.session_state.get("overlay_tog", False) else np.array(img)
                     try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
+
+                    
                 st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
                 if res.get("metrics"):
                     m = res["metrics"]
@@ -417,11 +427,26 @@ with viewer:
                         f"**Dice/F1** {m['dice']:.3f} • **IoU** {m['iou']:.3f}"
                     )
             else:
-                with prob_col:
-                    st.warning("⚠️ Run inference to view preprocessed image.")
-                with out_col:
-                    st.warning("⚠️ Run inference to view probability map.")
-                    alpha = st.slider("Opacity", 0, 100, 50, key="alpha")/100.0 if overlay_toggle else 0.0
+                if st.session_state.get("running"):
+                    # Placeholders at the same size as the source image
+                    w, h = img.size
+                    ph_gray = Image.new("L", (w, h), 128)          # mid-gray
+                    ph_rgb  = Image.new("RGB", (w, h), (48, 48, 48))  # dark gray
+
+                    with prob_col:
+                        st.image(ph_gray, caption="Preprocessed (placeholder)", use_container_width=True)
+                    with out_col:
+                        st.image(ph_rgb, caption="Predicted Vessel Map (placeholder)", use_container_width=True)
+                        # Keep the slider visible but disabled so the UI doesn't jump
+                        st.slider("Opacity", 0, 100, 50, key="alpha", disabled=True)
+                else:
+                    with prob_col:
+                        st.warning("⚠️ Run inference to view preprocessed image.")
+                    with out_col:
+                        st.warning("⚠️ Run inference to view probability map.")
+                        st.slider("Opacity", 0, 100, 50, key="alpha", disabled=True)
+
+                    
     else:
         st.info("No image selected. Choose one in the Selection gallery above.")
 
