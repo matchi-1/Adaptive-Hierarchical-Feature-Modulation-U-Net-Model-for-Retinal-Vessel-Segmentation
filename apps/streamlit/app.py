@@ -600,7 +600,9 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
         fundus_gray = np.array(fundus_pil.convert("L"))
         # preprocess_image_retina expects a path; if the function supports ndarray, use it directly.
         # If it needs a path, write a temp file:
-        tmp_path = Path(st.experimental_get_query_params().get("_tmp_dir", ["."])[0]) / f"__tmp_{sel_stem}.png"
+        tmp_dir = st.query_params.get("_tmp_dir", ".")  # returns a string now
+        tmp_path = Path(tmp_dir) / f"__tmp_{sel_stem}.png"
+
         fundus_pil.save(tmp_path)
 
         # library version that takes file path:
