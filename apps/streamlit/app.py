@@ -6,6 +6,17 @@ import numpy as np
 from PIL import Image
 import streamlit as st
 from pathlib import Path
+import sys 
+
+# Model checkpoint file
+MODEL_CHECKPOINT = Path("outputs/checkpoints/baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2] 
+sys.path.append(str(PROJECT_ROOT))
+
+# Model + preprocessing utilities (the same you use in Colab)
+from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
+from src.data.preprocessing import preprocess_image_retina, preprocess_mask
 
 # ---------------------- Page setup ----------------------
 st.set_page_config(page_title="Retinal Vessel Segmentation UI", layout="wide")
@@ -58,6 +69,8 @@ def init_state():
     ss.setdefault("fov_uploader_nonce", {})   # per-stem nonce to reset FOV uploader
     ss.setdefault("overlay_tog", False)
     ss.setdefault("overlay_reset", False)
+    ss.setdefault("gt_by_stem", {})  
+
 
 
 init_state()
@@ -106,20 +119,33 @@ def device_label() -> str:
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 @st.cache_resource
-def load_model(model_name: str, device: str = "auto"):
-    # TODO: replace with real MATFHI / UNet model loading
-    class Dummy:
-        name = model_name
-        def infer(self, img: Image.Image) -> np.ndarray:
-            # Fake prob map [H,W] in [0,1] just to prove UI
-            w, h = img.size
-            yy, xx = np.mgrid[0:h, 0:w]
-            prob = (np.sin(xx / 20.0) * np.cos(yy / 25.0) + 1.0) * 0.5
-            cx, cy = w // 2, h // 2
-            r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-            prob += np.exp(-(r / (min(w, h) / 3.0)) ** 2) * 0.25
-            return np.clip(prob, 0, 1).astype(np.float32)
-    return Dummy()
+def load_seg_model(device: str = "auto"):
+    dev = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
+    if device != "auto":
+        dev = device
+
+    BASE_KW = {"cbam_reduction": 16}
+    model = DPCNConcatUNet(
+        in_ch=1,             # grayscale
+        enh_channels=64,
+        iters=6,             # match your training if needed (you used 8 in title, 4 in quick test)
+        threshold_mode="scaled_vat",
+        half_life=2.0,       # match training
+        reduce_to=64,        # match training (you had 48/64 in different spots—pick what you trained)
+        base_kwargs=BASE_KW,
+    ).to(dev).eval()
+
+    state = torch.load(MODEL_CHECKPOINT, map_location=dev)
+    model.load_state_dict(state, strict=True)
+    return model, dev
+
+def load_fov_1hw_from_bytes(fov_bytes: bytes, target_hw: tuple[int, int]) -> np.ndarray:
+    """Return np.float32 array shaped [1,H,W] in {0,1} resized to target_hw."""
+    im = Image.open(io.BytesIO(fov_bytes)).convert("L")
+    im = im.resize((target_hw[1], target_hw[0]), Image.NEAREST)
+    arr = (np.array(im) > 0).astype(np.float32)
+    return arr[None, ...]  # [1,H,W]
+
 
 def render_telemetry_sidebar_footer():
     card_telemetry = st.container(border=True)
@@ -480,26 +506,30 @@ with viewer:
                     
     else:
         st.info("No image selected. Choose one in the Selection gallery above.")
-
     
-    btn_run_viewer = st.button(
-        "Run Inference",
-        type="primary",
-        use_container_width=True,
-        disabled=st.session_state.get("running", False) or not has_selected_file
-    )
+    run_columns_viewer = st.columns([1,1,1])
+    
+    with run_columns_viewer[0]:
+        btn_run_viewer = st.button(
+            "Run Inference",
+            type="primary",
+            use_container_width=True,
+            disabled=st.session_state.get("running", False) or not has_selected_file
+        )
 
-    btn_stop_viewer = st.button(
-        "Stop",
-        use_container_width=True,
-        disabled=(not st.session_state.get("running", False))
-    )
+    with run_columns_viewer[1]:
+        btn_stop_viewer = st.button(
+            "Stop",
+            use_container_width=True,
+            disabled=(not st.session_state.get("running", False))
+        )
 
-    btn_clear_viewer = st.button(
-        "Clear",
-        use_container_width=True,
-        disabled=not has_result
-    )
+    with run_columns_viewer[2]:
+        btn_clear_viewer = st.button(
+            "Clear",
+            use_container_width=True,
+            disabled=not has_result
+        )
 
 
     # Clear only the preprocessed & prediction for the selected image
@@ -517,54 +547,105 @@ with viewer:
 if btn_run_viewer and has_selected_file and (not st.session_state.get("running", False)):
     sel_stem = st.session_state["selected_stem"]
     img_file = next((f for f in st.session_state["files_img"] if stem_of(f.name) == sel_stem), None)
+
     if img_file is None:
         add_msg("error", "Selected image not found.")
     else:
         st.session_state["running"] = True
         st.session_state["stop_flag"] = False
-        try:
-            add_msg("info", f"Starting inference for **{img_file.name}**.")
-            dev = device_label()
-            model = load_model("MATFHI", device=dev)
-            thr = st.session_state.get("threshold", 0.5)
 
-            im = pil_from_upload(img_file)
-            w, h = im.size
+        # Load model (cached)
+        model, dev = load_seg_model()
 
-            fov_im = None
-            fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-            if fov_entry:
-                with contextlib.suppress(Exception):
-                    fov_im = to_gray(Image.open(io.BytesIO(fov_entry["bytes"]))).resize((w, h), Image.NEAREST)
+        # 1) Preprocess (matches your Colab: grayscale + retina preprocessing)
+        stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
+        IMAGE_SIZE = 512  # set to the exact size used in training
+        # Save uploaded fundus to a temporary BytesIO and call your prep on a path-like object
+        fundus_pil = pil_from_upload(img_file)
+        # Convert PIL to tmp path-like: write into memory & re-open via OpenCV-like pipeline if needed.
+        # Easiest: preprocess_image_retina also accepts np.ndarray; if not, save temp file to /tmp.
+        # Using ndarray path: convert to grayscale np with same shape
+        fundus_gray = np.array(fundus_pil.convert("L"))
+        # preprocess_image_retina expects a path; if your function supports ndarray, use it directly.
+        # If it needs a path, write a temp file:
+        tmp_path = Path(st.experimental_get_query_params().get("_tmp_dir", ["."])[0]) / f"__tmp_{sel_stem}.png"
+        fundus_pil.save(tmp_path)
 
-            stage_runner(stage, "Warming up…"); time.sleep(0.05)
-            t0 = time.time()
-            stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
-            if st.session_state["stop_flag"]:
-                stage_runner(stage, "Stopped.")
-                pass  
+        # Your library version that takes file path:
+        img_1hw = preprocess_image_retina(
+            str(tmp_path),
+            target_size=IMAGE_SIZE,
+            use_gamma=True,
+            gamma=0.9,
+            clahe_clip=2.0,
+            clahe_tiles=8
+        ).astype(np.float32)  # [1,H,W], 0..1
 
-            stage_runner(stage, "Predicting…")
-            prob = model.infer(im); time.sleep(0.05)
+        H, W = img_1hw.shape[-2], img_1hw.shape[-1]
+        pre_img = (img_1hw[0] * 255.0).astype(np.uint8)  # for UI “Preprocessed Image”
 
-            stage_runner(stage, "Post-processing…")
-            mask = (prob >= thr).astype(np.uint8) * 255
-            pre_img = np.array(to_gray(im))
-            total_ms = (time.time() - t0) * 1000.0
+        # 2) FOV: prefer user's FOV; else derive from preprocessing (>0)
+        fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+        if fov_entry and fov_entry.get("bytes"):
+            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], (H, W))
+        else:
+            fov_1hw = (img_1hw > 0).astype(np.float32)  # safe default
 
-            st.session_state["results"][sel_stem] = {
-                "prob": prob,
-                "mask": mask,
-                "pre": pre_img,
-                "timings": {"total_ms": total_ms},
-                "device": dev,
-                "metrics": None,
-            }
-            stage_runner(stage, "Done.")
-        finally:
-            st.session_state["running"] = False
-            st.session_state["done_once"] = True
-            st.rerun()
+        # 3) To torch
+        x   = torch.from_numpy(img_1hw).unsqueeze(0).to(dev)   # [B=1,1,H,W]
+        fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)   # [1,1,H,W]
+
+        # 4) Inference
+        stage_runner(stage, "Predicting…"); time.sleep(0.05)
+        t0 = time.time()
+        with torch.no_grad():
+            # autocast only on CUDA
+            use_amp = (dev == "cuda")
+            amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
+            with amp_ctx:
+                logits = model(x, fov=fov)  # [1,1,H,W]
+        probs = torch.sigmoid(logits)              # [1,1,H,W]
+        total_ms = (time.time() - t0) * 1000.0
+
+        # 5) Threshold and convert for UI
+        thr = st.session_state.get("threshold", 0.5)
+        pred01 = (probs >= thr).float()            # [1,1,H,W]
+        mask_255 = (pred01[0,0].cpu().numpy() * 255).astype(np.uint8)   # [H,W]
+        prob_np = probs[0,0].detach().cpu().numpy().astype(np.float32)  # [H,W], 0..1
+
+        # 6) (Optional) Metrics — only if “With Ground Truth” and GT exists for this stem
+        metrics = None
+        if st.session_state.get("submode") == "With Ground Truth":
+            gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
+            if gt_entry and gt_entry.get("bytes"):
+                # preprocess GT to same size
+                gt_tmp = PROJECT_ROOT / f"__tmp_gt_{sel_stem}.png"
+                Path(gt_tmp).write_bytes(gt_entry["bytes"])
+                gt_1hw = preprocess_mask(str(gt_tmp), target_size=IMAGE_SIZE).astype(np.float32)  # [1,H,W], 0/1
+                y = torch.from_numpy(gt_1hw).unsqueeze(0).to(dev)      # [1,1,H,W]
+                m = (fov > 0.5).float()                                # FOV mask
+                # quick scores (you can swap in your package’s iou/dice/etc.)
+                tp = (pred01*m*y).sum().item()
+                fn = ((1-pred01)*m*y).sum().item()
+                fp = (pred01*m*(1-y)).sum().item()
+                dice = (2*tp) / max(1.0, 2*tp + fp + fn)
+                iou  = tp / max(1.0, tp + fp + fn)
+                metrics = {"dice": float(dice), "iou": float(iou)}
+
+        # 7) Save to session for the Viewer
+        st.session_state["results"][sel_stem] = {
+            "probs": prob_np,           # float32 [H,W] 0..1 (keep if you need it later)
+            "mask":  mask_255,          # uint8 [H,W] 0/255
+            "pre":   pre_img,           # uint8 [H,W]
+            "timings": {"total_ms": total_ms},
+            "device": dev,
+            "metrics": metrics
+        }
+        stage_runner(stage, "Done.")
+        st.session_state["running"] = False
+        st.session_state["done_once"] = True
+        st.rerun()
+
 
 
 # ---------------------- Comparison tab scaffold ----------------------
