@@ -367,28 +367,21 @@ with viewer:
             st.warning("Selected image not found.")
         else:
             img = pil_from_upload(img_file)
-
-            # Original + FOV (manage FOV here for the selected image)
+            
+            # --- Viewer: Original + FOV (display-only) ---
             with img_col:
                 try_zoomable("Original (zoomable)" if zoomable_image else "Original", img)
 
                 fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-                with st.expander(f"FOV for {sel_stem}", expanded=False):
-                    if fov_up is not None:
-                        st.session_state["fov_by_stem"][sel_stem] = {
-                            "name": fov_up.name,
-                            "mime": fov_up.type or "image/png",
-                            "bytes": fov_up.getvalue(),
-                        }
-                        st.success("FOV paired.")
-                        st.rerun()
 
-                    fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                with st.expander(f"FOV for {sel_stem}", expanded=False):
                     if fov_entry:
-                        st.caption(f"Paired: {fov_entry['name']}")
+                        # show just the FOV image (no "paired" caption)
                         st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
                     else:
-                        st.caption("No uploaded FOV paired to this image.")
+                        st.caption("No FOV paired.")
+
+           
 
             # Results panes if exist
             res = st.session_state["results"].get(sel_stem)
