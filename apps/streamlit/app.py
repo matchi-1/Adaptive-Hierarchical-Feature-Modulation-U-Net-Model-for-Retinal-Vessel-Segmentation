@@ -325,24 +325,24 @@ if img_files:
             else:
                 st.caption("No FOV paired.")
 
-            st.divider()
+            #st.divider()
             # Select / Unselect buttons
-            c_sel1, c_sel2 = st.columns(2)
-            with c_sel1:
-                if st.button("Select this image", key=f"select_{stem}", use_container_width=True,
-                             disabled=is_selected):
-                    st.session_state["selected_stem"] = stem
-                    st.rerun()
-            with c_sel2:
-                if st.button("Unselect", key=f"unselect_{stem}", use_container_width=True,
-                             disabled=not is_selected):
-                    st.session_state["selected_stem"] = None
-                    st.rerun()
+        c_sel1, c_sel2 = st.columns(2)
+        with c_sel1:
+            if st.button("Select this image", key=f"select_{stem}", use_container_width=True,
+                            disabled=is_selected):
+                st.session_state["selected_stem"] = stem
+                st.rerun()
+        with c_sel2:
+            if st.button("Unselect", key=f"unselect_{stem}", use_container_width=True,
+                            disabled=not is_selected):
+                st.session_state["selected_stem"] = None
+                st.rerun()
 
-            # Delete full image button
-            if st.button("Delete Image / Image Pair", key=f"del_img_{stem}", use_container_width=True):
-                delete_image_by_stem(stem)
-            
+        # Delete full image button
+        if st.button("Delete Image / Image Pair", key=f"del_img_{stem}", use_container_width=True):
+            delete_image_by_stem(stem)
+    
 
 # ---------------------- Viewer & status (Run/Stop moved here) ----------------------
 st.divider()
