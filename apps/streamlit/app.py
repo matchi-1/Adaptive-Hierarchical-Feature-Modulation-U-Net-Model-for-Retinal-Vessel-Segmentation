@@ -463,29 +463,41 @@ with viewer:
                     else:
                         st.warning("No preprocessed image saved.")
                 with out_col:
-                    # Dynamic thresholding from stored probs (so changing the threshold updates immediately)
-                    prob_np = res["probs"]  # [H,W] float32 (already FOV-clamped)
-                    thr = st.session_state.get("threshold", 0.5)
-                    mask_bin = (prob_np >= thr).astype(np.uint8) * 255  # [H,W] 0/255
-
-                    # Show the binary map
-                    st.image(mask_bin, caption="Predicted Vessel Map (binary)", use_container_width=True)
-
-                    # Overlay on the resized+pad RGB (same 512×512 geometry)
+                    # Optional overlay on the resized+pad RGB (same 512×512 geometry)
                     overlay_on = has_result and st.session_state.get("overlay_tog", False)
+
                     if overlay_on:
+                        # live threshold → recompute binary map from probs
+                        thr = st.session_state.get("threshold", 0.5)
+                        prob_np = res["probs"]  # [H,W] float32 (FOV-clamped)
+                        mask_bin = (prob_np >= thr).astype(np.uint8) * 255  # [H,W] 0/255
+
                         alpha_pct = st.session_state.get("alpha", 50)
                         alpha = alpha_pct / 100.0
 
-                        overlay_rgb = colorize_mask(mask_bin).astype(np.float32)  # [H,W,3]
-                        base_rgb = res.get("overlay_base_rgb")                    # [H,W,3] uint8 (512×512)
+                        base_rgb = res.get("overlay_base_rgb")  # [H,W,3] uint8 @ model size
                         if base_rgb is None:
-                            # backward-compat fallback if an old result lacks this field
-                            base_rgb = _iso_resize_and_pad(np.array(img.convert("RGB")), target=IMAGE_SIZE, pad_value=0).astype(np.uint8)
+                            base_rgb = _iso_resize_and_pad(
+                                np.array(img.convert("RGB")), target=IMAGE_SIZE, pad_value=0
+                            ).astype(np.uint8)
 
-                        blended = blend(base_rgb, overlay_rgb, alpha)
+                        # Per-pixel alpha only where vessels are present (white overlay, transparent elsewhere)
+                        base = base_rgb.astype(np.float32)
+                        mask01 = (mask_bin.astype(np.float32) / 255.0)[..., None]  # [H,W,1]
+                        alpha_map = alpha * mask01                                  # [H,W,1]
+                        blended = np.clip(base * (1.0 - alpha_map) + 255.0 * alpha_map, 0, 255).astype(np.uint8)
+
                         try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
                         st.slider("Opacity", 0, 100, alpha_pct, key="alpha")
+                    
+                    else:
+                        prob_np = res["probs"]  # [H,W] float32 (already FOV-clamped)
+                        thr = st.session_state.get("threshold", 0.5)
+                        mask_bin = (prob_np >= thr).astype(np.uint8) * 255  # [H,W] 0/255
+
+                        # Show the binary map
+                        st.image(mask_bin, caption="Predicted Vessel Map (binary)", use_container_width=True)
+
 
 
 
