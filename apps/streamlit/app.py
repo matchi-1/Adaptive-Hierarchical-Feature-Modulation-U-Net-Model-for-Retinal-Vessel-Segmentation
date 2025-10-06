@@ -55,6 +55,8 @@ def init_state():
     ss.setdefault("done_once", False)
     ss.setdefault("deleted_stems", set())              # <- NEW: keep stems that were deleted
     ss.setdefault("uploader_nonce", 0)                 # <- NEW: bump to reset uploader widget
+    ss.setdefault("fov_uploader_nonce", {})   # per-stem nonce to reset FOV uploader
+
 init_state()
 
 # ---------------------- Helpers ----------------------
@@ -173,6 +175,7 @@ def delete_image_by_stem(stem: str):
     st.session_state["sel_idx"] = 0 if n == 0 else min(st.session_state["sel_idx"], n - 1)
     # Reset uploader widget so its visual list clears
     st.session_state["uploader_nonce"] += 1
+    st.session_state["fov_uploader_nonce"].pop(stem, None)  # NEW: reset uploader for this stem
     st.rerun()
 
 def clear_session_outputs():
@@ -186,6 +189,7 @@ def clear_session_outputs():
     st.session_state["fov_by_stem"] = {}
     st.session_state["deleted_stems"] = set()
     st.session_state["uploader_nonce"] += 1  # also reset uploader
+    st.session_state["fov_uploader_nonce"] = {}  # reset fovs
 
 # ---------------------- Sidebar (top controls + sticky footer) ----------------------
 top = st.sidebar.container()
@@ -303,27 +307,36 @@ if img_files:
                 f"margin:.25rem 0 .5rem 0'>{banner_txt}</div>",
                 unsafe_allow_html=True
             )
+
+            # ---- FOV uploader with per-stem nonce (keeps uploader & Remove in sync) ----
+            nonce = st.session_state["fov_uploader_nonce"].get(stem, 0)
             fov_up = st.file_uploader(
-                    f"FOV for {stem}",
-                    type=["png","jpg","jpeg","tif"],
-                    key=f"fov_sel_{stem}"
-                )
+                f"FOV for {stem}",
+                type=["png","jpg","jpeg","tif"],
+                key=f"fov_sel_{stem}_{nonce}"     # KEY INCLUDES NONCE
+            )
             if fov_up is not None:
                 st.session_state["fov_by_stem"][stem] = {
                     "name": fov_up.name,
                     "mime": fov_up.type or "image/png",
                     "bytes": fov_up.getvalue(),
                 }
+                # bump nonce to clear uploader’s selected file display
+                st.session_state["fov_uploader_nonce"][stem] = nonce + 1
+                st.rerun()
 
+            # Show / remove paired FOV
             fov_entry = st.session_state["fov_by_stem"].get(stem)
             if fov_entry:
-                st.caption(f"Paired FOV: {fov_entry['name']}")
                 st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
                 if st.button("Remove FOV", key=f"rm_fov_sel_{stem}", use_container_width=True):
                     st.session_state["fov_by_stem"].pop(stem, None)
+                    # bump nonce again so uploader clears after removal
+                    st.session_state["fov_uploader_nonce"][stem] = st.session_state["fov_uploader_nonce"].get(stem, 0) + 1
                     st.rerun()
             else:
                 st.caption("No FOV paired.")
+
 
             #st.divider()
             # Select / Unselect buttons
@@ -367,28 +380,21 @@ with viewer:
             st.warning("Selected image not found.")
         else:
             img = pil_from_upload(img_file)
-
-            # Original + FOV (manage FOV here for the selected image)
+            
+            # --- Viewer: Original + FOV (display-only) ---
             with img_col:
                 try_zoomable("Original (zoomable)" if zoomable_image else "Original", img)
 
                 fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-                with st.expander(f"FOV for {sel_stem}", expanded=False):
-                    if fov_up is not None:
-                        st.session_state["fov_by_stem"][sel_stem] = {
-                            "name": fov_up.name,
-                            "mime": fov_up.type or "image/png",
-                            "bytes": fov_up.getvalue(),
-                        }
-                        st.success("FOV paired.")
-                        st.rerun()
 
-                    fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+                with st.expander(f"FOV for {sel_stem}", expanded=False):
                     if fov_entry:
-                        st.caption(f"Paired: {fov_entry['name']}")
+                        # show just the FOV image (no "paired" caption)
                         st.image(Image.open(io.BytesIO(fov_entry["bytes"])), use_container_width=True)
                     else:
-                        st.caption("No uploaded FOV paired to this image.")
+                        st.caption("No FOV paired.")
+
+           
 
             # Results panes if exist
             res = st.session_state["results"].get(sel_stem)
