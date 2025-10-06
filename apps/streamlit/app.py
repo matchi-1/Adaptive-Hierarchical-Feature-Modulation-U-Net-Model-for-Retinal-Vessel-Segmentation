@@ -14,7 +14,10 @@ MODEL_CHECKPOINT = Path("outputs/checkpoints/baseunet_dpcn_6_iters_64ch_msu_cbam
 PROJECT_ROOT = Path(__file__).resolve().parents[2] 
 sys.path.append(str(PROJECT_ROOT))
 
-# Model + preprocessing utilities (the same you use in Colab)
+IMAGE_SIZE = 512
+USE_FOV_IN_MODEL = False  # set True ONLY if the checkpoint was trained using model(x, fov=...)
+
+# Model + preprocessing utilities
 from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
 from src.data.preprocessing import preprocess_image_retina, preprocess_mask
 
@@ -126,12 +129,12 @@ def load_seg_model(device: str = "auto"):
 
     BASE_KW = {"cbam_reduction": 16}
     model = DPCNConcatUNet(
-        in_ch=1,             # grayscale
+        in_ch=1,             
         enh_channels=64,
-        iters=6,             # match your training if needed (you used 8 in title, 4 in quick test)
+        iters=6,            
         threshold_mode="scaled_vat",
-        half_life=2.0,       # match training
-        reduce_to=64,        # match training (you had 48/64 in different spots—pick what you trained)
+        half_life=2.0,       
+        reduce_to=64,       
         base_kwargs=BASE_KW,
     ).to(dev).eval()
 
@@ -459,21 +462,30 @@ with viewer:
                     else:
                         st.warning("No preprocessed image saved.")
                 with out_col:
+                    # Always show the binary vessel map first (single-channel)
+                    mask_bin = res["mask"]  # uint8 [H,W], 0/255
+                    st.image(mask_bin, caption="Predicted Vessel Map (binary)", use_container_width=True)
+
+                    # Optional overlay BELOW the binary map, on the ORIGINAL image
                     overlay_on = has_result and st.session_state.get("overlay_tog", False)
-
-                    # Use last slider value if present, else default to 50
-                    alpha_pct = st.session_state.get("alpha", 50)
-                    alpha = (alpha_pct / 100.0) if overlay_on else 0.0
-
-                    overlay_rgb = colorize_mask(res["mask"])
-                    blended = blend(np.array(img), overlay_rgb, alpha) if overlay_on else np.array(img)
-
-                    # 1) Show the image first
-                    try_zoomable("Overlay (zoomable)" if zoomable_image else "Predicted Vessel Map (w/ Overlay)", Image.fromarray(blended)) # this shouldnt have (w/ overlay) if its still disabled
-
-                    # 2) Only then show the slider — and only if overlay is actually ON
                     if overlay_on:
+                        # Use last slider value if present, else default to 50
+                        alpha_pct = st.session_state.get("alpha", 50)
+                        alpha = alpha_pct / 100.0
+
+                        # Colorize the binary mask for overlay (red)
+                        overlay_rgb = colorize_mask(mask_bin)  # float32 RGB from 0..255 mask
+
+                        # Blend overlay onto the ORIGINAL fundus image (not the mask)
+                        base_rgb = np.array(img)  # original RGB
+                        blended = blend(base_rgb, overlay_rgb, alpha)
+
+                        # Show overlay image first, then the slider under it
+                        try_zoomable("Overlay on Original (zoomable)" if zoomable_image else "Overlay on Original",
+                                    Image.fromarray(blended))
+
                         st.slider("Opacity", 0, 100, alpha_pct, key="alpha")
+
 
 
                     
@@ -492,7 +504,13 @@ with viewer:
                     ph_rgb  = Image.new("RGB", (w, h), (48, 48, 48))  # dark gray
 
                     with prob_col:
-                        st.image(ph_gray, caption="Preprocessed (placeholder)", use_container_width=True)
+                        pre_img = res.get("pre")
+                        if pre_img is not None:
+                            st.image(pre_img, caption="Preprocessed Image (FOV-applied)", use_container_width=True, clamp=True)
+                            st.markdown("#")
+                        else:
+                            st.warning("No preprocessed image saved.")
+
                     with out_col:
                         st.image(ph_rgb, caption="Predicted Vessel Map (placeholder)", use_container_width=True)
                         
@@ -557,21 +575,22 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
         # Load model (cached)
         model, dev = load_seg_model()
 
-        # 1) Preprocess (matches your Colab: grayscale + retina preprocessing)
+        # 1) Preprocess (grayscale + retina preprocessing)
         stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
         IMAGE_SIZE = 512  # set to the exact size used in training
-        # Save uploaded fundus to a temporary BytesIO and call your prep on a path-like object
+        # Save uploaded fundus to a temporary BytesIO and call prep on a path-like object
         fundus_pil = pil_from_upload(img_file)
         # Convert PIL to tmp path-like: write into memory & re-open via OpenCV-like pipeline if needed.
         # Easiest: preprocess_image_retina also accepts np.ndarray; if not, save temp file to /tmp.
         # Using ndarray path: convert to grayscale np with same shape
         fundus_gray = np.array(fundus_pil.convert("L"))
-        # preprocess_image_retina expects a path; if your function supports ndarray, use it directly.
+        # preprocess_image_retina expects a path; if the function supports ndarray, use it directly.
         # If it needs a path, write a temp file:
         tmp_path = Path(st.experimental_get_query_params().get("_tmp_dir", ["."])[0]) / f"__tmp_{sel_stem}.png"
         fundus_pil.save(tmp_path)
 
-        # Your library version that takes file path:
+        # library version that takes file path:
+        # --- Preprocess fundus (no FOV inside) ---
         img_1hw = preprocess_image_retina(
             str(tmp_path),
             target_size=IMAGE_SIZE,
@@ -579,39 +598,48 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
             gamma=0.9,
             clahe_clip=2.0,
             clahe_tiles=8
-        ).astype(np.float32)  # [1,H,W], 0..1
+        ).astype(np.float32)  # [1,H,W] in [0,1]
 
         H, W = img_1hw.shape[-2], img_1hw.shape[-1]
-        pre_img = (img_1hw[0] * 255.0).astype(np.uint8)  # for UI “Preprocessed Image”
 
-        # 2) FOV: prefer user's FOV; else derive from preprocessing (>0)
+        # --- FOV (prefer uploaded, else fallback to "non-zero" heuristic) ---
         fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
         if fov_entry and fov_entry.get("bytes"):
             fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], (H, W))
         else:
-            fov_1hw = (img_1hw > 0).astype(np.float32)  # safe default
+            # fallback: anything non-zero in preprocessed = inside FOV
+            fov_1hw = (img_1hw > 0).astype(np.float32)  # [1,H,W] in {0,1}
 
-        # 3) To torch
-        x   = torch.from_numpy(img_1hw).unsqueeze(0).to(dev)   # [B=1,1,H,W]
-        fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)   # [1,1,H,W]
+        # --- Gate the image by FOV BEFORE the model (as in dataset.py) ---
+        img_fov_1hw = (img_1hw * fov_1hw).astype(np.float32)
+
+        # --- UI preprocessed preview (FOV-applied) ---
+        pre_img_vis = (img_fov_1hw[0] * 255.0).astype(np.uint8)  # [H,W] uint8
+
+        # --- Tensors ---
+        x   = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev)  # [1,1,H,W]
+        fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)      # [1,1,H,W]
 
         # 4) Inference
         stage_runner(stage, "Predicting…"); time.sleep(0.05)
         t0 = time.time()
         with torch.no_grad():
-            # autocast only on CUDA
             use_amp = (dev == "cuda")
             amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
             with amp_ctx:
-                logits = model(x, fov=fov)  # [1,1,H,W]
-        probs = torch.sigmoid(logits)              # [1,1,H,W]
+                logits = model(x, fov=fov) if USE_FOV_IN_MODEL else model(x)
+        probs = torch.sigmoid(logits)  # [1,1,H,W]
         total_ms = (time.time() - t0) * 1000.0
 
+
         # 5) Threshold and convert for UI
+        probs = probs * (fov > 0.5).float()
         thr = st.session_state.get("threshold", 0.5)
-        pred01 = (probs >= thr).float()            # [1,1,H,W]
-        mask_255 = (pred01[0,0].cpu().numpy() * 255).astype(np.uint8)   # [H,W]
-        prob_np = probs[0,0].detach().cpu().numpy().astype(np.float32)  # [H,W], 0..1
+        pred01 = (probs >= thr).float()
+
+        mask_bin_u8 = (pred01[0,0].cpu().numpy() * 255).astype(np.uint8)   # [H,W] 0/255
+        prob_np     =  probs[0,0].cpu().numpy().astype(np.float32)         # [H,W] 0..1
+
 
         # 6) (Optional) Metrics — only if “With Ground Truth” and GT exists for this stem
         metrics = None
@@ -624,7 +652,7 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
                 gt_1hw = preprocess_mask(str(gt_tmp), target_size=IMAGE_SIZE).astype(np.float32)  # [1,H,W], 0/1
                 y = torch.from_numpy(gt_1hw).unsqueeze(0).to(dev)      # [1,1,H,W]
                 m = (fov > 0.5).float()                                # FOV mask
-                # quick scores (you can swap in your package’s iou/dice/etc.)
+                # quick scores (we can swap in this with package’s iou/dice/etc.)
                 tp = (pred01*m*y).sum().item()
                 fn = ((1-pred01)*m*y).sum().item()
                 fp = (pred01*m*(1-y)).sum().item()
@@ -634,9 +662,9 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
 
         # 7) Save to session for the Viewer
         st.session_state["results"][sel_stem] = {
-            "probs": prob_np,           # float32 [H,W] 0..1 (keep if you need it later)
-            "mask":  mask_255,          # uint8 [H,W] 0/255
-            "pre":   pre_img,           # uint8 [H,W]
+            "probs": prob_np,           # float32 [H,W] 0..1 (keep if we need it later)
+            "mask":  mask_bin_u8,          # uint8 [H,W] 0/255
+            "pre":   pre_img_vis,           # uint8 [H,W]
             "timings": {"total_ms": total_ms},
             "device": dev,
             "metrics": metrics
