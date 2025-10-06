@@ -408,15 +408,24 @@ with viewer:
                 with prob_col:
                     prob = res["prob"]
                     st.image(prob, caption="Probability", use_container_width=True, clamp=True)
+                    st.markdown("#")
                 with out_col:
-                    # Opacity slider: only enabled if we have a result AND overlay is ON
-                    alpha_raw = st.slider("Opacity", 0, 100, 50, key="alpha",
-                                        disabled=not (has_result and st.session_state.get("overlay_tog", False)))
-                    alpha = (alpha_raw / 100.0) if (has_result and st.session_state.get("overlay_tog", False)) else 0.0
+                    overlay_on = has_result and st.session_state.get("overlay_tog", False)
+
+                    # Use last slider value if present, else default to 50
+                    alpha_pct = st.session_state.get("alpha", 50)
+                    alpha = (alpha_pct / 100.0) if overlay_on else 0.0
 
                     overlay_rgb = colorize_mask(res["mask"])
-                    blended = blend(np.array(img), overlay_rgb, alpha) if st.session_state.get("overlay_tog", False) else np.array(img)
+                    blended = blend(np.array(img), overlay_rgb, alpha) if overlay_on else np.array(img)
+
+                    # 1) Show the image first
                     try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
+
+                    # 2) Only then show the slider — and only if overlay is actually ON
+                    if overlay_on:
+                        st.slider("Opacity", 0, 100, alpha_pct, key="alpha")
+
 
                     
                 st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
@@ -437,14 +446,13 @@ with viewer:
                         st.image(ph_gray, caption="Preprocessed (placeholder)", use_container_width=True)
                     with out_col:
                         st.image(ph_rgb, caption="Predicted Vessel Map (placeholder)", use_container_width=True)
-                        # Keep the slider visible but disabled so the UI doesn't jump
-                        st.slider("Opacity", 0, 100, 50, key="alpha", disabled=True)
+                        
                 else:
                     with prob_col:
                         st.warning("⚠️ Run inference to view preprocessed image.")
                     with out_col:
                         st.warning("⚠️ Run inference to view probability map.")
-                        st.slider("Opacity", 0, 100, 50, key="alpha", disabled=True)
+                        
 
                     
     else:
