@@ -119,27 +119,21 @@ def load_model(model_name: str, device: str = "auto"):
     return Dummy()
 
 def render_telemetry_sidebar_footer():
-    """Device/System details + Notes at the bottom of the sidebar (sticky via CSS)."""
-    st.markdown('<div class="sidebar-footer">', unsafe_allow_html=True)
-    st.caption("Device / System")
-    if psutil:
-        st.write(f"CPU: {psutil.cpu_percent(interval=None)}%")
-    else:
-        st.write("CPU: psutil not installed")
-    if torch and torch.cuda.is_available():
-        used = torch.cuda.memory_allocated(0) / (1024 ** 3)
-        total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        st.write(f"GPU: {torch.cuda.get_device_name(0)}")
-        st.write(f"VRAM: {used:.2f} / {total:.2f} GB")
-    else:
-        st.write(f"GPU: none (using {device_label()})")
-
-    st.markdown("### How to use")
-    st.write("- Upload a **batch of fundus images** below.")
-    st.write("- Use **Prev/Next** to browse; upload a **per-image FOV** on the right.")
-    st.write("- FOV is automatically **paired** with its image.")
-    st.write("- Run inference from the sidebar; overlay/timing show in the Viewer.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    card_telemetry = st.container(border=True)
+    with card_telemetry:
+        st.caption("Device / System")
+        if psutil:
+            st.write(f"CPU: {psutil.cpu_percent(interval=None)}%")
+        else:
+            st.write("CPU: psutil not installed")
+        if torch and torch.cuda.is_available():
+            used = torch.cuda.memory_allocated(0) / (1024 ** 3)
+            total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            st.write(f"GPU: {torch.cuda.get_device_name(0)}")
+            st.write(f"VRAM: {used:.2f} / {total:.2f} GB")
+        else:
+            st.write(f"GPU: none (using {device_label()})")
+  
 
 def try_zoomable(label: str, img: Image.Image):
     if zoomable_image:
@@ -199,16 +193,18 @@ with top:
     model_mode = st.selectbox("Top Mode", ["Single Model (MATFHI)", "Comparison (UNet vs MATFHI)"],
                               index=0, key="mode_top")
     submode = st.radio("Run Mode", ["Predict Only", "With Ground Truth"], key="submode")
-    # add keys so inference can read them reliably
-    threshold = st.slider("Threshold", 0.0, 1.0, 0.5, 0.01, key="threshold")
-    mask_outside_fov = st.checkbox("Mask outside FOV (metrics)", value=True, key="mask_outside_fov")
-    st.divider()
     
 
 with footer:
+    st.markdown("#")
     render_telemetry_sidebar_footer()
-
-
+    st.markdown("#")
+    st.markdown("### How to use")
+    st.write("- Upload a **batch of fundus images** below.")
+    st.write("- Use **Prev/Next** to browse; upload a **per-image FOV** on the right.")
+    st.write("- FOV is automatically **paired** with its image.")
+    st.write("- Run inference from the sidebar; overlay/timing show in the Viewer.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------- Main layout ----------------------
 st.markdown("####")
