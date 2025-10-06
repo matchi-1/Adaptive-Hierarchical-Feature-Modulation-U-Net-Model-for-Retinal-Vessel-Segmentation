@@ -9,6 +9,7 @@ from src.models.dpcn.dpcn_v2 import DPCN
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import (
     UNetWithMSU_HASSkip_CBAM_ASFG
 )
+from src.models.unet_exp.base_unet_ablations.base_unet_r2n50_msu_cbam_hasskip_ver2 import UNetWithMSU_HASSkip_CBAM_ASFG_R2N50
 
 class DPCNConcatUNet_Exp1(nn.Module):
     """
@@ -143,3 +144,59 @@ class DPCNConcatUNet(nn.Module):        # version 1
 
         # pass to existing UNet/MSU/HAS/CBAM
         return self.base(x_cat)
+
+
+class DPCNConcatRes2UNet_ASFG(nn.Module):
+    """
+    DPCN → stack → concat(T*C) → (optional 1x1 stem) → UNetWithMSU_HASSkip_CBAM_ASFG_R2N50
+    Keeps the exact logic of DPCNConcatUNet; only the base changes.
+    """
+    def __init__(self,
+                 in_ch: int = 1,
+                 enh_channels: int = 32,
+                 iters: int = 4,
+                 threshold_mode: str = "scaled_vat",
+                 half_life: float = 2.0,
+                 reduce_to: int | None = None,
+                 base_kwargs: dict | None = None):
+        super().__init__()
+        self.iters = int(iters)
+        self.enh_channels = int(enh_channels)
+
+        # 1) DPCN enhancer returning [N,T,C,H,W]
+        self.enh = DPCN(
+            in_ch=in_ch,
+            channels=enh_channels,
+            iters=iters,
+            threshold_mode=threshold_mode,
+            half_life=half_life,
+            aggregate="stack",
+        )
+
+        # 2) Prep base input channels (T*C or reduced)
+        in_ch_base = enh_channels * iters
+        self.stem = nn.Identity()
+        if reduce_to is not None and reduce_to != in_ch_base:
+            self.stem = nn.Conv2d(in_ch_base, reduce_to, kernel_size=1, bias=True)
+            in_ch_base = reduce_to
+
+        # 3) Base: Res2Net-50 encoder + MSU + HAS + ASFG
+        base_kwargs = base_kwargs or {}
+        self.base = UNetWithMSU_HASSkip_CBAM_ASFG_R2N50(in_channels=in_ch_base, **base_kwargs)
+
+    def forward(self, x: torch.Tensor, fov: torch.Tensor | None = None) -> torch.Tensor:
+        
+        # Run DPCN in fp32 to avoid FP16–bias mismatch
+        was_autocast = torch.is_autocast_enabled()
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            ys = self.enh(x.float(), fov=fov)           # [N,T,C,H,W] in fp32
+
+        N, T, C, H, W = ys.shape
+        x_cat = ys.reshape(N, T*C, H, W)
+        x_cat = self.stem(x_cat)
+
+        # Cast back to the active autocast dtype (fp16/bf16) if we were in AMP
+        if was_autocast:
+            x_cat = x_cat.to(dtype=torch.get_autocast_gpu_dtype())
+
+        return self.base(x_cat)                         # rest runs under AMP as usual
