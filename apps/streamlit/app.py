@@ -9,7 +9,7 @@ from pathlib import Path
 import sys 
 
 # Model checkpoint file
-MODEL_CHECKPOINT = Path("outputs/checkpoints/baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth")
+#MODEL_CHECKPOINT = Path("outputs/checkpoints/[DRIVE] baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2] 
 sys.path.append(str(PROJECT_ROOT))
@@ -20,6 +20,14 @@ USE_FOV_IN_MODEL = False  # set True ONLY if the checkpoint was trained using mo
 # Model + preprocessing utilities
 from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
 from src.data.preprocessing import preprocess_image_retina, preprocess_mask, _iso_resize_and_pad
+
+
+DATASET_CHECKPOINTS = {
+    "DRIVE":     Path("outputs/checkpoints/[DRIVE] baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth"),
+    "CHASE-DB1": Path("outputs/checkpoints/[CHASEDB1] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_CHASEDB1_patching.pth"),
+    "STARE":     Path("outputs/checkpoints/[STARE] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_STARE_patching.pth"),
+}
+IMAGE_SIZE_BY_DATASET = {"DRIVE": 512, "CHASE-DB1": 512, "STARE": 512} 
 
 
 # ---------------------- Page setup ----------------------
@@ -75,6 +83,7 @@ def init_state():
     ss.setdefault("fov_tog", False)
     ss.setdefault("overlay_reset", False)
     ss.setdefault("gt_by_stem", {})  
+    ss.setdefault("dataset_choice", "DRIVE")
 
 
 
@@ -128,23 +137,24 @@ def caption_with_size(label: str, im: Image.Image) -> str:
     return f"{label}   |  {w} × {h}px |"
 
 @st.cache_resource
-def load_seg_model(device: str = "auto"):
+def load_seg_model(device: str = "auto", dataset: Optional[str] = None):
     dev = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
     if device != "auto":
         dev = device
+    ds = dataset or st.session_state.get("dataset_choice", "DRIVE")
+    ckpt = DATASET_CHECKPOINTS.get(ds)
+    if ckpt is None or not ckpt.exists():
+        st.error(f"No checkpoint found for '{ds}' at: {ckpt}")
+        raise FileNotFoundError(f"Missing checkpoint for {ds}: {ckpt}")
 
     BASE_KW = {"cbam_reduction": 16}
     model = DPCNConcatUNet(
-        in_ch=1,             
-        enh_channels=64,
-        iters=6,            
-        threshold_mode="scaled_vat",
-        half_life=2.0,       
-        reduce_to=64,       
+        in_ch=1, enh_channels=64, iters=6,
+        threshold_mode="scaled_vat", half_life=2.0, reduce_to=64,
         base_kwargs=BASE_KW,
     ).to(dev).eval()
 
-    state = torch.load(MODEL_CHECKPOINT, map_location=dev)
+    state = torch.load(ckpt, map_location=dev)
     model.load_state_dict(state, strict=True)
     return model, dev
 
@@ -194,6 +204,27 @@ def fov_bin_from_bytes(fov_bytes: bytes, out_wh: tuple[int, int]) -> np.ndarray:
     arr = np.array(im, dtype=np.uint8)
     # force binary; >127 becomes inside-FOV (1), else 0
     return (arr > 127).astype(np.uint8)  # [H,W] in {0,1}
+
+
+def dataset_toggle_row(disabled: bool = False):
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    with c1:
+        st.markdown("**Chosen dataset model:**")
+    for label, col in [("DRIVE", c2), ("CHASE-DB1", c3), ("STARE", c4)]:
+        with col:
+            selected = (st.session_state["dataset_choice"] == label)
+            if st.button(
+                label,
+                type=("primary" if selected else "secondary"),
+                use_container_width=True,
+                disabled=disabled,
+            ):
+                if not selected:
+                    st.session_state["dataset_choice"] = label
+                    # Clear any old results since the model will change
+                    st.session_state["results"].clear()
+                    st.session_state["overlay_reset"] = True
+                    st.rerun()
 
 
 # --- image delete in selection stem ---
@@ -254,6 +285,9 @@ with footer:
 
 # ---------------------- Main layout ----------------------
 st.markdown("####")
+st.markdown("# MATHFI: Multi-scale Adaptive Thresholding with Hierarchical Feature Integration")
+st.divider()
+
 card_upload_sec = st.container(border=True)
 with card_upload_sec:
     st.markdown("## Upload Raw Fundus Image(s) here")
@@ -416,6 +450,7 @@ with viewer:
 
         
     # --- compute selection/result state BEFORE building header controls ---
+    st.markdown("## Inference")
     sel_stem = st.session_state.get("selected_stem")
     has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
 
@@ -571,7 +606,9 @@ with viewer:
         st.info("No image selected. Choose one in the Selection gallery above.")
     
     run_columns_viewer = st.columns([1,1,1])
-    
+
+    dataset_toggle_row(disabled=st.session_state.get("running", False))
+
     with run_columns_viewer[0]:
         btn_run_viewer = st.button(
             "Run Inference",
