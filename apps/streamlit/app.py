@@ -123,6 +123,10 @@ def device_label() -> str:
         return "cpu"
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
+def caption_with_size(label: str, im: Image.Image) -> str:
+    w, h = im.size  # PIL: (width, height)
+    return f"{label}   |  {w} × {h}px |"
+
 @st.cache_resource
 def load_seg_model(device: str = "auto"):
     dev = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
@@ -471,9 +475,9 @@ with viewer:
                     # keep vessels/retina as-is inside FOV; set outside to black
                     base_rgb[fov01 == 0] = 0
                     show_pil = Image.fromarray(base_rgb)
-                    try_zoomable("Original (FOV applied)", show_pil)
+                    try_zoomable(caption_with_size("Original (FOV applied)", show_pil), show_pil)
                 else:
-                    try_zoomable("Original", base_pil)
+                    try_zoomable(caption_with_size("Original (Raw image input)", base_pil), base_pil)
 
 
            
@@ -485,7 +489,7 @@ with viewer:
                 with prob_col:
                     pre_img = res.get("pre")
                     if pre_img is not None:
-                        st.image(pre_img, caption="Preprocessed Image", use_container_width=True, clamp=True)
+                        st.image(pre_img, caption="Preprocessed Image | 512 × 512px |", use_container_width=True, clamp=True)
                         st.markdown("#")
                     else:
                         st.warning("No preprocessed image saved.")
