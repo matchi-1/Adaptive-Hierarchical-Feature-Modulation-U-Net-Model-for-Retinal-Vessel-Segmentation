@@ -19,7 +19,8 @@ USE_FOV_IN_MODEL = False  # set True ONLY if the checkpoint was trained using mo
 
 # Model + preprocessing utilities
 from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
-from src.data.preprocessing import preprocess_image_retina, preprocess_mask
+from src.data.preprocessing import preprocess_image_retina, preprocess_mask, _iso_resize_and_pad
+
 
 # ---------------------- Page setup ----------------------
 st.set_page_config(page_title="Retinal Vessel Segmentation UI", layout="wide")
@@ -462,29 +463,30 @@ with viewer:
                     else:
                         st.warning("No preprocessed image saved.")
                 with out_col:
-                    # Always show the binary vessel map first (single-channel)
-                    mask_bin = res["mask"]  # uint8 [H,W], 0/255
+                    # Dynamic thresholding from stored probs (so changing the threshold updates immediately)
+                    prob_np = res["probs"]  # [H,W] float32 (already FOV-clamped)
+                    thr = st.session_state.get("threshold", 0.5)
+                    mask_bin = (prob_np >= thr).astype(np.uint8) * 255  # [H,W] 0/255
+
+                    # Show the binary map
                     st.image(mask_bin, caption="Predicted Vessel Map (binary)", use_container_width=True)
 
-                    # Optional overlay BELOW the binary map, on the ORIGINAL image
+                    # Overlay on the resized+pad RGB (same 512×512 geometry)
                     overlay_on = has_result and st.session_state.get("overlay_tog", False)
                     if overlay_on:
-                        # Use last slider value if present, else default to 50
                         alpha_pct = st.session_state.get("alpha", 50)
                         alpha = alpha_pct / 100.0
 
-                        # Colorize the binary mask for overlay (red)
-                        overlay_rgb = colorize_mask(mask_bin)  # float32 RGB from 0..255 mask
+                        overlay_rgb = colorize_mask(mask_bin).astype(np.float32)  # [H,W,3]
+                        base_rgb = res.get("overlay_base_rgb")                    # [H,W,3] uint8 (512×512)
+                        if base_rgb is None:
+                            # backward-compat fallback if an old result lacks this field
+                            base_rgb = _iso_resize_and_pad(np.array(img.convert("RGB")), target=IMAGE_SIZE, pad_value=0).astype(np.uint8)
 
-                        # Blend overlay onto the ORIGINAL fundus image (not the mask)
-                        base_rgb = np.array(img)  # original RGB
                         blended = blend(base_rgb, overlay_rgb, alpha)
-
-                        # Show overlay image first, then the slider under it
-                        try_zoomable("Overlay on Original (zoomable)" if zoomable_image else "Overlay on Original",
-                                    Image.fromarray(blended))
-
+                        try_zoomable("Overlay (zoomable)" if zoomable_image else "Overlay", Image.fromarray(blended))
                         st.slider("Opacity", 0, 100, alpha_pct, key="alpha")
+
 
 
 
@@ -660,11 +662,18 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
                 iou  = tp / max(1.0, tp + fp + fn)
                 metrics = {"dice": float(dice), "iou": float(iou)}
 
+        # RGB base for overlay (match model space: 512×512, isotropic pad)
+        overlay_base_rgb = _iso_resize_and_pad(
+            np.array(fundus_pil.convert("RGB")), target=IMAGE_SIZE, pad_value=0
+        ).astype(np.uint8)  # [H,W,3] uint8
+
+
         # 7) Save to session for the Viewer
         st.session_state["results"][sel_stem] = {
             "probs": prob_np,           # float32 [H,W] 0..1 (keep if we need it later)
             "mask":  mask_bin_u8,          # uint8 [H,W] 0/255
             "pre":   pre_img_vis,           # uint8 [H,W]
+            "overlay_base_rgb": overlay_base_rgb,
             "timings": {"total_ms": total_ms},
             "device": dev,
             "metrics": metrics
