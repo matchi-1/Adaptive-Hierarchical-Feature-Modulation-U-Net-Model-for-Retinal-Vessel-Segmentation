@@ -212,14 +212,16 @@ with footer:
 
 # ---------------------- Main layout ----------------------
 st.markdown("####")
-st.markdown("#### Inputs")
-# Key includes nonce so deleting an image resets/clears the widget selection UI
-up1 = st.file_uploader(
-    "Fundus images (batch upload)",
-    type=["png","jpg","jpeg","tif"],
-    accept_multiple_files=True,
-    key=f"u1_{st.session_state['uploader_nonce']}"
-)
+card_upload_sec = st.container(border=True)
+with card_upload_sec:
+    st.markdown("## Upload Raw Fundus Image(s) here")
+    # Key includes nonce so deleting an image resets/clears the widget selection UI
+    up1 = st.file_uploader(
+        "Fundus images (batch upload)",
+        type=["png","jpg","jpeg","tif"],
+        accept_multiple_files=True,
+        key=f"u1_{st.session_state['uploader_nonce']}"
+    )
 
 # Merge new uploads into our library, ignoring stems that were deleted
 # --- Sync uploader content to library exactly (handles deletions in uploader UI) ---
@@ -266,7 +268,7 @@ if img_files:
     idx = st.session_state["sel_idx"]
     
     st.divider()
-    st.markdown("#### Selection")
+    st.markdown("## Preview and Selection")
     c_prev, c_mid, c_next = st.columns([1, 6, 1])
     with c_prev:
         if st.button("◀ Prev", use_container_width=True, disabled=(idx <= 0)):
