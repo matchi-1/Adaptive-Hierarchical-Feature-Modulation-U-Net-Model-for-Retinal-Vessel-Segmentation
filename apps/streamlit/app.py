@@ -91,6 +91,7 @@ with footer:
 # ---------------------- Upload ----------------------
 st.markdown("####")
 st.markdown("# MATHFI: Multi-scale Adaptive Thresholding with Hierarchical Feature Integration")
+st.markdown(f"#### Simulation Mode: `{st.session_state.get("submode")}` & `{st.session_state.get("mode_top")}`")
 st.divider()
 
 card_upload_sec = st.container(border=True)
