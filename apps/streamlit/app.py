@@ -27,8 +27,8 @@ DATASET_CHECKPOINTS = {
     "DRIVE":     Path("outputs/checkpoints/[DRIVE] baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth"),
     "CHASE-DB1": Path("outputs/checkpoints/[CHASEDB1] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_CHASEDB1_patching.pth"),
     "STARE":     Path("outputs/checkpoints/[STARE] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_STARE_patching.pth"),
+    "ALL" :      Path("outputs/checkpoints/[ALL] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_all_datasets_patching.pth")
 }
-IMAGE_SIZE_BY_DATASET = {"DRIVE": 512, "CHASE-DB1": 512, "STARE": 512} 
 
 
 # ---------------------- Page setup ----------------------
@@ -293,10 +293,10 @@ def fov_bin_from_bytes(fov_bytes: bytes, out_wh: tuple[int, int]) -> np.ndarray:
 
 
 def dataset_toggle_row(disabled: bool = False):
-    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
     with c1:
         st.markdown("**Chosen dataset model:**")
-    for label, col in [("DRIVE", c2), ("CHASE-DB1", c3), ("STARE", c4)]:
+    for label, col in [("DRIVE", c2), ("CHASE-DB1", c3), ("STARE", c4), ("ALL", c5)]:
         with col:
             selected = (st.session_state["dataset_choice"] == label)
             if st.button(
@@ -742,7 +742,6 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
 
         # Load model (cached)
         ds = st.session_state.get("dataset_choice", "DRIVE")
-        IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
 
         model, dev, meta = load_seg_model(dataset=ds, ckpt_key=str(DATASET_CHECKPOINTS[ds]))
 
