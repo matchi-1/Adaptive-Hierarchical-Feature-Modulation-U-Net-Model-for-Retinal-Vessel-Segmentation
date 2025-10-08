@@ -149,10 +149,22 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
                 cols[i % 3].metric(k, _fmt(metrics.get(k)))
 
 
-def render_delta_cards_grid(metrics_m: dict, metrics_u: dict):
-    """Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing."""
-    primary = ["Sensitivity", "Specificity", "clDice",
-               "Accuracy", "IoU", "ROC_AUC"]
+def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None):
+    """
+    Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing.
+    Pass `keys` to control which metrics are shown (max 6 shown, 2 rows × 3 cols).
+    """
+    import math
+    import streamlit as st
+
+    # default = "main" set
+    if keys is None:
+        keys = ["Sensitivity", "Specificity", "clDice",
+                "Accuracy", "IoU", "ROC_AUC"]
+
+    # keep at most 6 to fit 2×3
+    keys = [k for k in keys if k]  # drop blanks
+    keys = keys[:6]
 
     def _delta(k: str):
         try:
@@ -167,10 +179,11 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict):
 
     def _cell(col, name: str, dv: float | None):
         # label
-        label_html = f"<div style='font-size:0.90rem; color:white;'>{name}</div>"
+        label_html = f"<div style='font-family: var(--font, inherit); font-size:0.90rem; color:white;'>{name}</div>"
 
+        # value (+ arrow) — keep Streamlit default font
         if dv is None:
-            val_html = "<div style=' font-size:2rem; font-weight:500; color:#6b7280'>—</div>"
+            val_html = "<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:#6b7280'>—</div>"
         else:
             if dv > 0:
                 color, arrow, val = "#16a34a", "↑ ", abs(dv)   # green
@@ -179,23 +192,27 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict):
             else:
                 color, arrow, val = "#6b7280", "– ", 0.0       # gray
             val_html = (
-                f"<div style=' font-size:2rem; font-weight:500; color:{color}'>"
+                f"<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:{color}'>"
                 f"{arrow}{val:.3f}"
                 f"</div>"
             )
 
-
         col.markdown(label_html + val_html, unsafe_allow_html=True)
 
-    # Row 1
+    # First row
     cols = st.columns(3)
-    for col, k in zip(cols, primary[:3]):
+    for col, k in zip(cols, keys[:3]):
+        _cell(col, k, _delta(k))
+    # gap between rows
+    st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+    # Second row
+    cols = st.columns(3)
+    for col, k in zip(cols, keys[3:6]):
         _cell(col, k, _delta(k))
 
-    # Add vertical space between the two rows (this controls the gap)
-    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-    # Row 2
-    cols = st.columns(3)
-    for col, k in zip(cols, primary[3:]):
-        _cell(col, k, _delta(k))
+def render_delta_cards_extended(metrics_m: dict, metrics_u: dict):
+    # Preferred extended order (we’ll show the first 6 that are available)
+    EXTENDED_ORDER = ["Precision", "Dice", "FPR", "FDR", "Dice_thin", "Dice_thick"]
+    keys = [k for k in EXTENDED_ORDER if (k in metrics_m or k in metrics_u)][:6]
+    render_delta_cards_grid(metrics_m, metrics_u, keys=keys)
