@@ -112,7 +112,7 @@ def _fmt(v):
         except Exception:
             return "—"
 
-def render_metric_cards_main(metrics: dict[str, float]):
+def render_metric_cards_main(metrics: dict[str, float], model_name):
     """
     Compact, readable metrics grid.
     Order:
@@ -121,7 +121,7 @@ def render_metric_cards_main(metrics: dict[str, float]):
     Extra metrics (if present) go under an expander.
     """
 
-    st.markdown("#### Prediction Metric Scores")
+    st.markdown(f"#### Prediction Metric Scores ({model_name})")
 
     # Primary rows (3 × 2)
     row1 = ["Sensitivity", "Specificity", "clDice"]
@@ -135,14 +135,14 @@ def render_metric_cards_main(metrics: dict[str, float]):
     for col, k in zip(cols, row2):
         col.metric(k, _fmt(metrics.get(k)))
 
-def render_metric_cards_others(metrics: dict[str, float]):
+def render_metric_cards_others(metrics: dict[str, float], model_name):
     rest_keys = [
         "Precision", "Dice", 
         "FPR", "FDR", "Dice_thin", "Dice_thick", #"PR_AUC",
     ]
     any_rest = any(k in metrics for k in rest_keys)
     if any_rest:
-        st.markdown("#### Extended metrics")
+        st.markdown(f"#### Extended metrics ({model_name})")
         cols = st.columns(3)
         for i, k in enumerate(rest_keys):
             if k in metrics:

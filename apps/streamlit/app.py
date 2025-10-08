@@ -651,9 +651,9 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             st.markdown("#### MATHFI Metrics")
             cols = st.columns([1.5,0.25,1.5])
             with cols[0]:
-                render_metric_cards_main(metrics_m)
+                render_metric_cards_main(metrics_m, "MATHFI")
             with cols[2]:
-                render_metric_cards_others(metrics_m)
+                render_metric_cards_others(metrics_m, "MATHFI")
         else:
             # Both models + deltas
             metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
@@ -662,10 +662,10 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             row = st.columns([1.5,0.25,1.5,0.25,1.25])
             with row[0]:
                 st.markdown("**MATHFI**")
-                render_metric_cards_main(metrics_m)
+                render_metric_cards_main(metrics_m, "MATHFI")
             with row[2]:
                 st.markdown("**UNet**")
-                render_metric_cards_main(metrics_u)
+                render_metric_cards_main(metrics_u, "U-Net")
             with row[4]:
                 # Delta panel (MATHFI - UNet)
                 st.markdown("**Δ (MATHFI − UNet)**")
@@ -686,9 +686,9 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             # Extended table beneath
             row2 = st.columns([1.5,0.25,1.5])
             with row2[0]:
-                render_metric_cards_others(metrics_m)
+                render_metric_cards_others(metrics_m, "MATHFI")
             with row2[2]:
-                render_metric_cards_others(metrics_u)
+                render_metric_cards_others(metrics_u, "U-Net")
 
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
