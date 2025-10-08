@@ -12,6 +12,10 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(PROJECT_ROOT))
 
+from src.training.metrics import (
+    dice, iou
+)
+
 # --- external deps (optional) ---
 try:
     import psutil
@@ -42,6 +46,9 @@ from apps.streamlit.lib.model import load_seg_model
 from apps.streamlit.lib.ui import (
     try_zoomable, caption_with_size, render_telemetry_sidebar_footer,
     dataset_toggle_row, stage_runner,
+)
+from apps.streamlit.lib.metrics_ui import (
+    compute_metrics_single, render_metric_cards
 )
 # used only to make overlay base the exact model geometry
 from src.data.preprocessing import _iso_resize_and_pad
@@ -323,15 +330,10 @@ with viewer:
                     else:
                         thr = st.session_state.get("threshold", 0.5)
                         mask_bin = (res["probs"] >= thr).astype(np.uint8) * 255
-                        st.image(mask_bin, caption="Predicted Vessel Map (binary)", use_container_width=True)
+                        st.image(mask_bin, caption="Predicted Vessel Map (MATHFI)", use_container_width=True)
 
                 st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
-                if res.get("metrics"):
-                    m = res["metrics"]
-                    st.markdown(
-                        f"**ACC** {m.get('acc', float('nan')):.3f} • **SEN** {m.get('sen', float('nan')):.3f} "
-                        f"• **SPE** {m.get('spe', float('nan')):.3f} • **Dice/F1** {m['dice']:.3f} • **IoU** {m['iou']:.3f}"
-                    )
+
             else:
                 if st.session_state.get("running"):
                     with prob_col:
@@ -469,7 +471,7 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
         st.session_state["running"] = False
         st.session_state["done_once"] = True
         st.rerun()
-        
+
 # --- After the buttons block in the Viewer (still inside `with viewer:`) ---
 if (
     st.session_state.get("submode") == "With Ground Truth"
@@ -478,6 +480,7 @@ if (
 ):
     gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
     if gt_entry and gt_entry.get("bytes"):
+        st.divider()
         st.markdown("### Ground Truth vs Prediction")
 
         col_gt, col_pred, col_scores = st.columns([1, 1, 1])
@@ -504,37 +507,22 @@ if (
             fov_1hw = np.ones_like(gt_1hw, dtype=np.float32)
 
         with col_gt:
-            st.image(gt_vis, caption=f"Ground Truth | {IMAGE_SIZE} × {IMAGE_SIZE}px", use_container_width=True)
+            st.image(gt_vis, caption=f"Ground Truth", use_container_width=True)
 
         with col_pred:
-            st.image(pred_vis, caption="Prediction (thresholded)", use_container_width=True)
+            st.image(pred_vis, caption="Predicted Vessel Map (MATHFI)", use_container_width=True)
 
         with col_scores:
-            # Compute metrics inside-FOV only
-            G = (gt_1hw[0] > 0.5).astype(np.uint8)
-            P = pred_bin.astype(np.uint8)
-            M = (fov_1hw[0] > 0.5).astype(np.uint8)
-
-            Pm = P[M == 1]; Gm = G[M == 1]
-            tp = int(((Pm == 1) & (Gm == 1)).sum())
-            tn = int(((Pm == 0) & (Gm == 0)).sum())
-            fp = int(((Pm == 1) & (Gm == 0)).sum())
-            fn = int(((Pm == 0) & (Gm == 1)).sum())
-            total = max(1, tp + tn + fp + fn)
-
-            acc  = (tp + tn) / total
-            sen  = tp / max(1, tp + fn)
-            spe  = tn / max(1, tn + fp)
-            dice = (2 * tp) / max(1, 2 * tp + fp + fn)
-            iou  = tp / max(1, tp + fp + fn)
-
-            st.markdown(
-                f"**Dice/F1:** {dice:.3f}\n\n"
-                f"**IoU:** {iou:.3f}\n\n"
-                f"**ACC:** {acc:.3f}\n\n"
-                f"**SEN:** {sen:.3f}\n\n"
-                f"**SPE:** {spe:.3f}"
+            # Compute all metrics once (masked to FOV), then render pretty
+            metrics_all = compute_metrics_single(
+                pred_probs=prob_np,      # (H,W) float
+                gt_1hw=gt_1hw,           # (1,H,W) {0,1}
+                fov_1hw=fov_1hw,         # (1,H,W) {0,1} or ones
+                threshold=thr,
+                compute_auc=True,
             )
+            render_metric_cards(metrics_all) 
+
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see side-by-side and metrics.")
 
