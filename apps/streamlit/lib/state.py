@@ -13,7 +13,8 @@ def init_state():
     ss.setdefault("fov_by_stem", {})
     ss.setdefault("files_gt", [])
     ss.setdefault("files_fov", [])
-    ss.setdefault("results", {})
+    ss.setdefault("results", {})                # MATHFI results
+    ss.setdefault("results_unet", {})           # UNet results
     ss.setdefault("messages", [])
     ss.setdefault("running", False)
     ss.setdefault("stop_flag", False)
@@ -27,6 +28,7 @@ def init_state():
     ss.setdefault("gt_by_stem", {})
     ss.setdefault("dataset_choice", "DRIVE")
     ss.setdefault("gt_uploader_nonce", {})   # per-stem nonce to reset GT uploader
+
 
 def add_msg(kind: str, text: str):
     st.session_state["messages"].append({"kind": kind, "text": text})

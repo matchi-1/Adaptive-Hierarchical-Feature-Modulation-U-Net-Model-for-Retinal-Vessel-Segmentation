@@ -12,6 +12,9 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(PROJECT_ROOT))
 
+LABEL_SINGLE  = "Single Model (MATHFI)"
+LABEL_COMPARE = "Comparison (UNet vs MATHFI)"
+
 from src.training.metrics import (
     dice, iou
 )
@@ -132,8 +135,7 @@ footer = st.sidebar.container()
 
 with top:
     st.markdown("# MATHFI")
-    st.selectbox("Top Mode", ["Single Model (MATHFI)", "Comparison (UNet vs MATHFI)"],
-                 index=0, key="mode_top")
+    st.selectbox("Top Mode", [LABEL_SINGLE, LABEL_COMPARE], index=0, key="mode_top")
     st.radio("Run Mode", ["Predict Only", "With Ground Truth"], key="submode")
 
 with footer:
@@ -330,14 +332,36 @@ st.divider()
 viewer = st.container()
 with viewer:
     sel_stem = st.session_state.get("selected_stem")
-    has_result = bool(sel_stem and st.session_state.get("results", {}).get(sel_stem))
     has_selected_file = bool(sel_stem and any(stem_of(f.name) == sel_stem for f in img_files))
+
+    # are we in comparison mode?
+    is_compare = (st.session_state.get("mode_top") == LABEL_COMPARE)
+
+    # fetch results for each model
+    res_all = st.session_state.get("results", {}).get(sel_stem)  # contains MATHFI and maybe nested UNet
+    res_m   = res_all  # MATHFI payload lives at top-level in your results_entry
+
+    # UNet can be in a separate bucket OR nested under results[stem]["unet"].
+    res_u = None
+    if is_compare:
+        res_u = st.session_state.get("results_unet", {}).get(sel_stem)
+        if res_u is None and res_all and "unet" in res_all:
+            res_u = res_all["unet"]
+
+    has_result_m   = bool(res_m)
+    has_result_u   = bool(res_u)
+    has_result_any = has_result_m or has_result_u
 
     st.markdown("## Inference")
     fov_entry_hdr = st.session_state.get("fov_by_stem", {}).get(sel_stem)
     has_fov_for_sel = bool(fov_entry_hdr and fov_entry_hdr.get("bytes"))
 
-    header_cols = st.columns([1, 1, 1])
+    # ---------------- Header row ----------------
+    if is_compare:
+        header_cols = st.columns([1, 1, 1, 1])
+    else:
+        header_cols = st.columns([1, 1, 1])
+
     with header_cols[0]:
         raw_header_cols = st.columns([3, 1])
         with raw_header_cols[0]:
@@ -347,20 +371,49 @@ with viewer:
                 st.toggle("FOV", key="fov_tog")
             else:
                 st.session_state.pop("fov_tog", None)
+
     with header_cols[1]:
         st.markdown("#### Preprocessed Image")
-    with header_cols[2]:
-        predicted_header_vessel_map_cols = st.columns([2, 1])
-        with predicted_header_vessel_map_cols[0]:
-            st.markdown("#### Predicted Vessel Map")
-        with predicted_header_vessel_map_cols[1]:
-            if st.session_state.pop("overlay_reset", False):
-                st.session_state.pop("overlay_tog", None)
-                st.session_state.pop("alpha", None)
-            st.toggle("Overlay", key="overlay_tog", disabled=not has_result)
+
+    # Pred headers (+ overlay toggles)
+    if is_compare:
+        with header_cols[2]:
+            pred_head_cols = st.columns([2, 1])
+            with pred_head_cols[0]:
+                st.markdown("#### Predicted (MATHFI)")
+            with pred_head_cols[1]:
+                if st.session_state.pop("overlay_reset", False):
+                    # reset both model overlay toggles if requested
+                    st.session_state.pop("overlay_tog_m", None)
+                    st.session_state.pop("alpha_m", None)
+                    st.session_state.pop("overlay_tog_u", None)
+                    st.session_state.pop("alpha_u", None)
+                st.toggle("Overlay", key="overlay_tog_m", disabled=not has_result_m)
+
+        with header_cols[3]:
+            pred_head_cols = st.columns([2, 1])
+            with pred_head_cols[0]:
+                st.markdown("#### Predicted (UNet)")
+            with pred_head_cols[1]:
+                st.toggle("Overlay", key="overlay_tog_u", disabled=not has_result_u)
+    else:
+        with header_cols[2]:
+            pred_head_cols = st.columns([2, 1])
+            with pred_head_cols[0]:
+                st.markdown("#### Predicted Vessel Map")
+            with pred_head_cols[1]:
+                if st.session_state.pop("overlay_reset", False):
+                    st.session_state.pop("overlay_tog_m", None)
+                    st.session_state.pop("alpha_m", None)
+                st.toggle("Overlay", key="overlay_tog_m", disabled=not has_result_m)
+
+    # ---------------- Body row ----------------
+    if is_compare:
+        img_col, prob_col, out_col_m, out_col_u = st.columns([1, 1, 1, 1])
+    else:
+        img_col, prob_col, out_col_m = st.columns([1, 1, 1])
 
     stage = st.empty()
-    img_col, prob_col, out_col = st.columns([1, 1, 1])
 
     if sel_stem:
         img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
@@ -383,58 +436,97 @@ with viewer:
                 else:
                     try_zoomable(caption_with_size("Original (Raw image input)", base_pil), base_pil)
 
-            # Results panes
-            res = st.session_state["results"].get(sel_stem)
-            if res:
-                with prob_col:
-                    pre_img = res.get("pre")
-                    if pre_img is not None:
-                        st.image(pre_img, caption="Preprocessed Image | 512 × 512px |", use_container_width=True, clamp=True)
-                    else:
-                        st.warning("No preprocessed image saved.")
+            # Preprocessed (use MATHFI pre if available; otherwise UNet; else warn)
+            with prob_col:
+                pre_img = None
+                if res_m and res_m.get("pre") is not None:
+                    pre_img = res_m.get("pre")
+                elif res_u and res_u.get("pre") is not None:
+                    pre_img = res_u.get("pre")
 
-                with out_col:
-                    overlay_on = st.session_state.get("overlay_tog", False)
+                if pre_img is not None:
+                    st.image(pre_img, caption=f"Preprocessed Image | {pre_img.shape[1]} × {pre_img.shape[0]}px |",
+                             use_container_width=True, clamp=True)
+                else:
+                    st.warning("No preprocessed image saved.")
+
+            # -------------- Predicted (MATHFI) --------------
+            if res_m:
+                with out_col_m:
+                    overlay_on = st.session_state.get("overlay_tog_m", False)
+                    thr = st.session_state.get("threshold", 0.5)
+                    prob_np = res_m["probs"]
+                    mask_bin = (prob_np >= thr).astype(np.uint8) * 255
+
                     if overlay_on:
-                        thr = st.session_state.get("threshold", 0.5)
-                        prob_np = res["probs"]
-                        mask_bin = (prob_np >= thr).astype(np.uint8) * 255
-
-                        alpha_pct = st.session_state.get("alpha", 50)
+                        alpha_pct = st.session_state.get("alpha_m", 50)
                         alpha = alpha_pct / 100.0
-
-                        base_rgb = res.get("overlay_base_rgb")
+                        base_rgb = res_m.get("overlay_base_rgb")
                         if base_rgb is None:
                             base_rgb = _iso_resize_and_pad(
-                                np.array(img.convert("RGB")), target=IMAGE_SIZE_BY_DATASET.get(st.session_state["dataset_choice"], 512), pad_value=0
+                                np.array(img.convert("RGB")),
+                                target=IMAGE_SIZE_BY_DATASET.get(st.session_state["dataset_choice"], 512),
+                                pad_value=0
                             ).astype(np.uint8)
-
                         base = base_rgb.astype(np.float32)
                         mask01 = (mask_bin.astype(np.float32) / 255.0)[..., None]
                         alpha_map = alpha * mask01
                         blended = np.clip(base * (1.0 - alpha_map) + 255.0 * alpha_map, 0, 255).astype(np.uint8)
-                        try_zoomable("Overlay", Image.fromarray(blended))
-                        st.slider("Opacity", 0, 100, alpha_pct, key="alpha")
+                        try_zoomable("Overlay (MATHFI)", Image.fromarray(blended))
+                        st.slider("Opacity", 0, 100, alpha_pct, key="alpha_m")
                     else:
-                        thr = st.session_state.get("threshold", 0.5)
-                        mask_bin = (res["probs"] >= thr).astype(np.uint8) * 255
                         st.image(mask_bin, caption="Predicted Vessel Map (MATHFI)", use_container_width=True)
-
-                st.caption(f"Time: {res['timings']['total_ms']:.1f} ms • Device: {res['device']}")
+                # timing/device for MATHFI
+                st.caption(f"MATHFI • Time: {res_m['timings']['total_ms']:.1f} ms • Device: {res_m['device']}")
 
             else:
+                # MATHFI missing
                 if st.session_state.get("running"):
-                    with prob_col:
-                        st.info("Preprocessing…")
-                    with out_col:
-                        st.info("Predicting…")
+                    with out_col_m:
+                        st.info("Predicting (MATHFI)…")
                 else:
-                    with prob_col:
-                        st.warning("⚠️ Run inference to view preprocessed image.")
-                    with out_col:
-                        st.warning("⚠️ Run inference to view probability map.")
+                    with out_col_m:
+                        st.warning("⚠️ Run inference to view MATHFI prediction.")
+
+            # -------------- Predicted (UNet) --------------
+            if is_compare:
+                if res_u:
+                    with out_col_u:
+                        overlay_on_u = st.session_state.get("overlay_tog_u", False)
+                        thr = st.session_state.get("threshold", 0.5)
+                        prob_np_u = res_u["probs"]
+                        mask_bin_u = (prob_np_u >= thr).astype(np.uint8) * 255
+
+                        if overlay_on_u:
+                            alpha_pct_u = st.session_state.get("alpha_u", 50)
+                            alpha_u = alpha_pct_u / 100.0
+                            base_rgb_u = res_u.get("overlay_base_rgb")
+                            if base_rgb_u is None:
+                                base_rgb_u = _iso_resize_and_pad(
+                                    np.array(img.convert("RGB")),
+                                    target=IMAGE_SIZE_BY_DATASET.get(st.session_state["dataset_choice"], 512),
+                                    pad_value=0
+                                ).astype(np.uint8)
+                            base_u = base_rgb_u.astype(np.float32)
+                            mask01_u = (mask_bin_u.astype(np.float32) / 255.0)[..., None]
+                            alpha_map_u = alpha_u * mask01_u
+                            blended_u = np.clip(base_u * (1.0 - alpha_map_u) + 255.0 * alpha_map_u, 0, 255).astype(np.uint8)
+                            try_zoomable("Overlay (UNet)", Image.fromarray(blended_u))
+                            st.slider("Opacity", 0, 100, alpha_pct_u, key="alpha_u")
+                        else:
+                            st.image(mask_bin_u, caption="Predicted Vessel Map (UNet)", use_container_width=True)
+                    # timing/device for UNet
+                    st.caption(f"UNet • Time: {res_u['timings']['total_ms']:.1f} ms • Device: {res_u['device']}")
+                else:
+                    if st.session_state.get("running"):
+                        with out_col_u:
+                            st.info("Predicting (UNet)…")
+                    else:
+                        with out_col_u:
+                            st.warning("⚠️ Run inference to view UNet prediction.")
     else:
         st.info("No image selected. Choose one in the Selection gallery above.")
+
 
     # controls
     run_cols = st.columns([1, 1, 1])
@@ -456,13 +548,15 @@ with viewer:
         btn_clear_viewer = st.button(
             "Clear",
             use_container_width=True,
-            disabled=not has_result
+            disabled=not has_result_any
         )
 
     if btn_clear_viewer and sel_stem:
-        st.session_state["results"].pop(sel_stem, None)
+        st.session_state.get("results", {}).pop(sel_stem, None)
+        st.session_state.get("results_unet", {}).pop(sel_stem, None)  # also clear UNet if present
         st.session_state["overlay_reset"] = True
         st.rerun()
+
 
     if btn_stop_viewer:
         st.session_state["stop_flag"] = True
@@ -546,7 +640,7 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
                 }
             }
 
-            if st.session_state.get("mode_top") == "Comparison (UNet vs MATHFI)":
+            if st.session_state.get("mode_top") == LABEL_COMPARE:
                 stage_runner(stage, "Predicting (UNet)…"); time.sleep(0.02)
                 mdl_unet, dev2, _ = load_unet_model(dataset=ds, checkpoints=UNET_CHECKPOINTS)
                 x2 = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev2)
@@ -583,11 +677,11 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
 
 
 # --- Ground Truth vs Prediction / Comparison section ---
-if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_result:
+if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_result_any:
     gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
     if gt_entry and gt_entry.get("bytes"):
         st.divider()
-        is_cmp_mode = (st.session_state.get("mode_top") == "Comparison (UNet vs MATHFI)")
+        is_cmp_mode = (st.session_state.get("mode_top") == LABEL_COMPARE)
         st.markdown("### " + ("UNet vs MATHFI (with Ground Truth)" if is_cmp_mode else "Ground Truth vs Prediction"))
 
         # Geometry
@@ -670,20 +764,20 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
 
             st.markdown("## Metrics: MATHFI vs UNet")
-            row = st.columns([1.5, 0.25, 1.5, 0.25, 1.5])
+            row = st.columns([1.5, 0.25, 1.5, 0.25, 1.75])
             with row[0]:
                 render_metric_cards_main(metrics_m, "MATHFI")
             with row[2]:
                 render_metric_cards_main(metrics_u, "U-Net")
             with row[4]:
                 # Delta panel (MATHFI - UNet)
-                st.markdown("#### Δ (MATFHI − UNet)")
+                st.markdown("#### Δ (MATHFI − UNet)")
                 render_delta_cards_grid(metrics_m, metrics_u)
 
 
             # extended metrics comparison
             st.markdown("#####")
-            row2 = st.columns([1.5, 0.25, 1.5, 0.25, 1.5])
+            row2 = st.columns([1.5, 0.25, 1.5, 0.25, 1.75])
 
             with row2[0]:
                 render_metric_cards_others(metrics_m, "MATHFI")
@@ -700,7 +794,3 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
 
 
-
-# ---------------------- Comparison scaffold ----------------------
-if st.session_state["mode_top"] == "Comparison (UNet vs MATHFI)":
-    st.warning("Comparison mode scaffolded. Later: load UNet + MATHFI and render side-by-side with the same inputs/threshold.")
