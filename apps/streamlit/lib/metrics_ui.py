@@ -1,6 +1,8 @@
 from typing import Optional, Dict
 import numpy as np
 import cv2
+import math
+import streamlit as st
 
 # metrics module
 from src.training.metrics import (
@@ -101,18 +103,7 @@ def compute_metrics_single(
 
     return out
 
-def render_metric_cards(metrics: dict[str, float]):
-    """
-    Compact, readable metrics grid.
-    Order:
-      Row 1: Sensitivity, Specificity, clDice
-      Row 2: Accuracy, IoU, ROC_AUC
-    Extra metrics (if present) go under an expander.
-    """
-    import math
-    import streamlit as st
-
-    def _fmt(v):
+def _fmt(v):
         try:
             if v is None: return "—"
             v = float(v)
@@ -120,6 +111,15 @@ def render_metric_cards(metrics: dict[str, float]):
             return f"{v:.3f}"
         except Exception:
             return "—"
+
+def render_metric_cards_main(metrics: dict[str, float]):
+    """
+    Compact, readable metrics grid.
+    Order:
+      Row 1: Sensitivity, Specificity, clDice
+      Row 2: Accuracy, IoU, ROC_AUC
+    Extra metrics (if present) go under an expander.
+    """
 
     st.markdown("#### Prediction Metric Scores")
 
@@ -135,14 +135,15 @@ def render_metric_cards(metrics: dict[str, float]):
     for col, k in zip(cols, row2):
         col.metric(k, _fmt(metrics.get(k)))
 
+def render_metric_cards_others(metrics: dict[str, float]):
     rest_keys = [
         "Precision", "Dice", 
         "FPR", "FDR", "Dice_thin", "Dice_thick", #"PR_AUC",
     ]
     any_rest = any(k in metrics for k in rest_keys)
     if any_rest:
-        with st.expander("*Other metrics*"):
-            cols = st.columns(3)
-            for i, k in enumerate(rest_keys):
-                if k in metrics:
-                    cols[i % 3].metric(k, _fmt(metrics.get(k)))
+        st.markdown("#### Extended metrics")
+        cols = st.columns(3)
+        for i, k in enumerate(rest_keys):
+            if k in metrics:
+                cols[i % 3].metric(k, _fmt(metrics.get(k)))

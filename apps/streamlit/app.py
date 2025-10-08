@@ -48,7 +48,7 @@ from apps.streamlit.lib.ui import (
     dataset_toggle_row, stage_runner,
 )
 from apps.streamlit.lib.metrics_ui import (
-    compute_metrics_single, render_metric_cards
+    compute_metrics_single, render_metric_cards_main, render_metric_cards_others
 )
 # used only to make overlay base the exact model geometry
 from src.data.preprocessing import _iso_resize_and_pad
@@ -545,8 +545,12 @@ if (
             compute_auc=True,
         )
 
-        # Render metrics below the three columns
-        render_metric_cards(metrics_all)
+        prediction_metrics_col = st.columns([1,1,1])
+        with prediction_metrics_col[0]:
+            render_metric_cards_main(metrics_all)
+        
+        with prediction_metrics_col[1]:
+            render_metric_cards_others(metrics_all)
 
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
