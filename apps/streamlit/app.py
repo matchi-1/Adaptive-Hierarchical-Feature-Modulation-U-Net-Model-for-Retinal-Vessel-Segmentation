@@ -654,15 +654,20 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
                 probs_u = torch.sigmoid(logits_u)
                 t_unet = (time.time() - t1) * 1000.0
 
-                # Gate probs (post) to mirror MATHFI path
-                probs_u = probs_u * (torch.from_numpy(fov_1hw).unsqueeze(0).to(dev2) > 0.5).float()
-                pred01_u = (probs_u >= thr).float()
+                # IMPORTANT: invert INSIDE FOV (UNet outputs vessel=black)
+                fov_t = (torch.from_numpy(fov_1hw).unsqueeze(0).to(dev2) > 0.5).float()  # (1,1,H,W)
+
+                # invert first, then zero-out outside FOV
+                probs_u = 1.0 - probs_u                      # vessel high inside FOV after this
+                probs_u = probs_u * fov_t                    # zero outside FOV
+
+                pred01_u  = (probs_u >= thr).float()
                 mask_u8_u = (pred01_u[0,0].cpu().numpy() * 255).astype(np.uint8)
                 prob_np_u = probs_u[0,0].cpu().numpy().astype(np.float32)
 
                 results_entry["unet"] = {
-                    "probs": prob_np_u,
-                    "mask":  mask_u8_u,
+                    "probs":  prob_np_u,     # <-- already inverted for the rest of the app
+                    "mask":   mask_u8_u,
                     "timings": {"total_ms": t_unet},
                     "device": dev2,
                 }
