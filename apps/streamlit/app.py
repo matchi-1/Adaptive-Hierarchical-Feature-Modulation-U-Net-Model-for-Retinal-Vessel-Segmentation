@@ -52,7 +52,7 @@ from apps.streamlit.lib.ui import (
     dataset_toggle_row, stage_runner,
 )
 from apps.streamlit.lib.metrics_ui import (
-    compute_metrics_single, render_metric_cards_main, render_metric_cards_others
+    compute_metrics_single, render_metric_cards_main, render_metric_cards_others, render_delta_cards_grid
 )
 # used only to make overlay base the exact model geometry
 from src.data.preprocessing import _iso_resize_and_pad
@@ -609,8 +609,10 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             )
 
         # ----- Row 1: MATHFI -----
+        st.markdown("#### *MATHFI Model Results*")
         col_p1, col_g1, col_pred1, col_cmp1 = st.columns([1,1,1,1])
         with col_p1:
+            
             if pre_img is not None:
                 st.image(pre_img, caption="Preprocessed", use_container_width=True, clamp=True)
         with col_g1:
@@ -626,6 +628,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
 
         # ----- Row 2: UNet (only in comparison mode and when we have it) -----
         if is_cmp_mode and "unet" in res:
+            st.markdown("#### *U-Net Model Results*")
             col_p2, col_g2, col_pred2, col_cmp2 = st.columns([1,1,1,1])
             with col_p2:
                 if pre_img is not None:
@@ -658,30 +661,16 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             # Both models + deltas
             metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
 
-            st.markdown("#### Metrics: MATHFI vs UNet")
-            row = st.columns([1.5,0.25,1.5,0.25,1.25])
+            st.markdown("## Metrics: MATHFI vs UNet")
+            row = st.columns([1,1,1])
             with row[0]:
-                st.markdown("**MATHFI**")
                 render_metric_cards_main(metrics_m, "MATHFI")
-            with row[2]:
-                st.markdown("**UNet**")
+            with row[1]:
                 render_metric_cards_main(metrics_u, "U-Net")
-            with row[4]:
+            with row[2]:
                 # Delta panel (MATHFI - UNet)
-                st.markdown("**Δ (MATHFI − UNet)**")
-
-                def fmt(x):
-                    try:
-                        return f"{x:+.3f}"
-                    except Exception:
-                        return "—"
-
-                primary = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
-                for k in primary:
-                    if k in metrics_m and k in metrics_u:
-                        dv = float(metrics_m[k]) - float(metrics_u[k])
-                        arrow = "↑" if dv > 0 else ("↓" if dv < 0 else "–")
-                        st.metric(k, fmt(dv), delta=None, help=f"{arrow}  MATHFI minus UNet")
+                st.markdown("#### Δ (MATFHI − UNet)")
+                render_delta_cards_grid(metrics_m, metrics_u)
 
             # Extended table beneath
             row2 = st.columns([1.5,0.25,1.5])

@@ -147,3 +147,54 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
         for i, k in enumerate(rest_keys):
             if k in metrics:
                 cols[i % 3].metric(k, _fmt(metrics.get(k)))
+
+
+def render_delta_cards_grid(metrics_m: dict, metrics_u: dict):
+    """
+    Show Δ (MATFHI − UNet) as a 2×3 grid.
+    Light green if increase, light red if decrease, gray if equal.
+    """
+    import math
+    import numpy as np
+    import streamlit as st
+
+    primary = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
+
+    def _card_html(name: str, delta_val: float | None):
+        if delta_val is None or (isinstance(delta_val, float) and (math.isnan(delta_val) or math.isinf(delta_val))):
+            bg = "#f3f4f6"; arrow, val = "–", "—"
+        else:
+            if delta_val > 0:
+                bg, arrow = "#029f0f", "↑"   # light green
+            elif delta_val < 0:
+                bg, arrow = "#ff092e", "↓"   # light red
+            else:
+                bg, arrow = "#f3f4f6", "–"   # neutral
+            val = f"{abs(delta_val):.3f}"
+
+        return f"""
+        <div style="border:1px solid #ddd;border-radius:12px;padding:.6rem .8rem;">
+          <div style="font-size:.9rem;color:#555;margin-bottom:.15rem">{name}</div>
+          <div style="font-size:1.15rem;font-weight:700;letter-spacing:.2px">{arrow} {val}</div>
+          <div style="font-size:.75rem;color:#7a7a7a;margin-top:.1rem">MATFHI − UNet</div>
+        </div>
+        """
+
+    # compute deltas in order
+    deltas = []
+    for k in primary:
+        try:
+            if k in metrics_m and k in metrics_u:
+                m = float(metrics_m[k]); u = float(metrics_u[k])
+                dv = m - u
+            else:
+                dv = None
+        except Exception:
+            dv = None
+        deltas.append((k, dv))
+
+    # render 2 rows × 3 cols
+    for row_keys in (deltas[:3], deltas[3:6]):
+        cols = st.columns(3)
+        for i, (name, dv) in enumerate(row_keys):
+            cols[i].markdown(_card_html(name, dv), unsafe_allow_html=True)
