@@ -29,6 +29,7 @@ except Exception:
 # --- app-local helpers (now in lib/) ---
 from apps.streamlit.lib.config import (
     DATASET_CHECKPOINTS,
+    UNET_CHECKPOINTS,
     IMAGE_SIZE_BY_DATASET,
     USE_FOV_IN_MODEL,
 )
@@ -42,7 +43,10 @@ from apps.streamlit.lib.preprocess import (
     load_fov_1hw_from_bytes,
     fov_bin_from_bytes,
 )
-from apps.streamlit.lib.model import load_mathfi_model
+from apps.streamlit.lib.model import (
+    load_mathfi_model,
+    load_unet_model)
+    
 from apps.streamlit.lib.ui import (
     try_zoomable, caption_with_size, render_telemetry_sidebar_footer,
     dataset_toggle_row, stage_runner,
@@ -435,95 +439,117 @@ with viewer:
 
 # ---------------------- Inference trigger ----------------------
 if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (not st.session_state.get("running", False)):
-    sel_stem = st.session_state["selected_stem"]
-    img_file = next((f for f in st.session_state["files_img"] if stem_of(f.name) == sel_stem), None)
+        sel_stem = st.session_state["selected_stem"]
+        img_file = next((f for f in st.session_state["files_img"] if stem_of(f.name) == sel_stem), None)
 
-    if img_file is None:
-        add_msg("error", "Selected image not found.")
-    else:
-        st.session_state["running"] = True
-        st.session_state["stop_flag"] = False
-
-        ds = st.session_state.get("dataset_choice", "DRIVE")
-        IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
-
-        model, dev, _ = load_mathfi_model(dataset=ds)
-
-        # 1) Preprocess
-        stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
-        fundus_pil = pil_from_upload(img_file)
-        img_1hw = preprocess_image_retina_from_pil(
-            fundus_pil,
-            target_size=IMAGE_SIZE,
-            use_gamma=True, gamma=0.9,
-            clahe_clip=2.0, clahe_tiles=8,
-        ).astype(np.float32)
-
-        # 2) FOV
-        fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
-        if fov_entry and fov_entry.get("bytes"):
-            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], target_size=IMAGE_SIZE)
+        if img_file is None:
+            add_msg("error", "Selected image not found.")
         else:
-            fov_1hw = (img_1hw > 0).astype(np.float32)
+            st.session_state["running"] = True
+            st.session_state["stop_flag"] = False
 
-        # 3) Apply FOV before model
-        img_fov_1hw = (img_1hw * fov_1hw).astype(np.float32)
-        pre_img_vis = (img_fov_1hw[0] * 255.0).astype(np.uint8)
+            ds = st.session_state.get("dataset_choice", "DRIVE")
+            IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
 
-        # 4) Inference
-        x   = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev)
-        fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)
+            # ---- 0) Preprocess once ----
+            stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
+            fundus_pil = pil_from_upload(img_file)
+            img_1hw = preprocess_image_retina_from_pil(
+                fundus_pil, target_size=IMAGE_SIZE, use_gamma=True, gamma=0.9,
+                clahe_clip=2.0, clahe_tiles=8,
+            ).astype(np.float32)
 
-        stage_runner(stage, "Predicting…"); time.sleep(0.05)
-        t0 = time.time()
-        with torch.no_grad():
-            use_amp = (dev == "cuda")
-            amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
-            with amp_ctx:
-                logits = model(x, fov=fov) if USE_FOV_IN_MODEL else model(x)
-        probs = torch.sigmoid(logits)
-        total_ms = (time.time() - t0) * 1000.0
+            # FOV (if none, use nonzero of preprocessed)
+            fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
+            if fov_entry and fov_entry.get("bytes"):
+                fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], target_size=IMAGE_SIZE)
+            else:
+                fov_1hw = (img_1hw > 0).astype(np.float32)
 
-        # 5) Post
-        probs = probs * (fov > 0.5).float()
-        thr = st.session_state.get("threshold", 0.5)
-        pred01 = (probs >= thr).float()
+            # Apply FOV before model
+            img_fov_1hw = (img_1hw * fov_1hw).astype(np.float32)
+            pre_img_vis = (img_fov_1hw[0] * 255.0).astype(np.uint8)
 
-        mask_bin_u8 = (pred01[0,0].cpu().numpy() * 255).astype(np.uint8)
-        prob_np     =  probs[0,0].cpu().numpy().astype(np.float32)
+            overlay_base_rgb = _iso_resize_and_pad(
+                np.array(fundus_pil.convert("RGB")), target=IMAGE_SIZE, pad_value=0
+            ).astype(np.uint8)
 
-        # 6) Optional metrics
-        metrics = None
-        if st.session_state.get("submode") == "With Ground Truth":
-            gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
-            if gt_entry and gt_entry.get("bytes"):
-                gt_1hw = preprocess_mask_from_bytes(gt_entry["bytes"], target_size=IMAGE_SIZE).astype(np.float32)
-                y = torch.from_numpy(gt_1hw).unsqueeze(0).to(dev)
-                m = (fov > 0.5).float()
-                tp = (pred01*m*y).sum().item()
-                fn = ((1-pred01)*m*y).sum().item()
-                fp = (pred01*m*(1-y)).sum().item()
-                dice = (2*tp) / max(1.0, 2*tp + fp + fn)
-                iou  = tp / max(1.0, tp + fp + fn)
-                metrics = {"dice": float(dice), "iou": float(iou)}
+            # Common tensors
+            # NOTE: UNet does not consume fov; we still gate input beforehand for fairness.
+            thr = st.session_state.get("threshold", 0.5)
 
-        overlay_base_rgb = _iso_resize_and_pad(
-            np.array(fundus_pil.convert("RGB")), target=IMAGE_SIZE, pad_value=0
-        ).astype(np.uint8)
+            # ---- 1) MATFHI inference ----
+            stage_runner(stage, "Predicting (MATFHI)…"); time.sleep(0.02)
+            mdl_matfhi, dev, _ = load_mathfi_model(dataset=ds)
+            x = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev)
+            fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)
 
-        st.session_state["results"][sel_stem] = {
-            "probs": prob_np,
-            "mask":  mask_bin_u8,
-            "pre":   pre_img_vis,
-            "overlay_base_rgb": overlay_base_rgb,
-            "timings": {"total_ms": total_ms},
-            "device": dev,
-            "metrics": metrics
-        }
-        stage_runner(stage, "Done.")
-        st.session_state["running"] = False
-        st.session_state["done_once"] = True
-        st.rerun()
+            t0 = time.time()
+            with torch.no_grad():
+                use_amp = (dev == "cuda")
+                amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
+                with amp_ctx:
+                    logits_m = mdl_matfhi(x, fov=fov) if USE_FOV_IN_MODEL else mdl_matfhi(x)
+            probs_m = torch.sigmoid(logits_m)
+            t_matfhi = (time.time() - t0) * 1000.0
+
+            # Gate probs again to be safe
+            probs_m = probs_m * (fov > 0.5).float()
+            pred01_m = (probs_m >= thr).float()
+            mask_u8_m = (pred01_m[0,0].cpu().numpy() * 255).astype(np.uint8)
+            prob_np_m = probs_m[0,0].cpu().numpy().astype(np.float32)
+
+            # ---- 2) UNet inference (comparison mode only) ----
+            results_entry = {
+                "pre": pre_img_vis,
+                "overlay_base_rgb": overlay_base_rgb,
+                "timings": {"total_ms": t_matfhi},
+                "device": dev,
+                "probs": prob_np_m,             # keep top-level for single-mode UI
+                "mask": mask_u8_m,
+                "matfhi": {                     # nested, used in comparison UI
+                    "probs": prob_np_m,
+                    "mask":  mask_u8_m,
+                    "timings": {"total_ms": t_matfhi},
+                    "device": dev,
+                }
+            }
+
+            if st.session_state.get("mode_top") == "Comparison (UNet vs MATFHI)":
+                stage_runner(stage, "Predicting (UNet)…"); time.sleep(0.02)
+                mdl_unet, dev2, _ = load_unet_model(dataset=ds, checkpoints=UNET_CHECKPOINTS)
+                x2 = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev2)
+
+                t1 = time.time()
+                with torch.no_grad():
+                    use_amp2 = (dev2 == "cuda")
+                    amp_ctx2 = torch.amp.autocast(device_type="cuda", enabled=use_amp2) if use_amp2 else contextlib.nullcontext()
+                    with amp_ctx2:
+                        logits_u = mdl_unet(x2)
+                probs_u = torch.sigmoid(logits_u)
+                t_unet = (time.time() - t1) * 1000.0
+
+                # Gate probs (post) to mirror MATFHI path
+                probs_u = probs_u * (torch.from_numpy(fov_1hw).unsqueeze(0).to(dev2) > 0.5).float()
+                pred01_u = (probs_u >= thr).float()
+                mask_u8_u = (pred01_u[0,0].cpu().numpy() * 255).astype(np.uint8)
+                prob_np_u = probs_u[0,0].cpu().numpy().astype(np.float32)
+
+                results_entry["unet"] = {
+                    "probs": prob_np_u,
+                    "mask":  mask_u8_u,
+                    "timings": {"total_ms": t_unet},
+                    "device": dev2,
+                }
+
+            # Save to session
+            st.session_state["results"][sel_stem] = results_entry
+
+            stage_runner(stage, "Done.")
+            st.session_state["running"] = False
+            st.session_state["done_once"] = True
+            st.rerun()
+
 
 # --- Ground Truth vs Prediction and metrics section -----
 if (
