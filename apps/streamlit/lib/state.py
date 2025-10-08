@@ -26,6 +26,7 @@ def init_state():
     ss.setdefault("overlay_reset", False)
     ss.setdefault("gt_by_stem", {})
     ss.setdefault("dataset_choice", "DRIVE")
+    ss.setdefault("gt_uploader_nonce", {})   # per-stem nonce to reset GT uploader
 
 def add_msg(kind: str, text: str):
     st.session_state["messages"].append({"kind": kind, "text": text})
@@ -63,3 +64,4 @@ def delete_image_by_stem(stem: str):
     st.session_state["sel_idx"] = 0 if n == 0 else min(st.session_state["sel_idx"], n - 1)
     st.session_state["uploader_nonce"] += 1
     st.session_state["fov_uploader_nonce"].pop(stem, None)
+    st.session_state["gt_by_stem"].pop(stem, None)
