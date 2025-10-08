@@ -235,22 +235,22 @@ if img_files:
 
     card = st.container(border=True)
     with card:
-        top_cols = st.columns([2, 1])
+        gt_mode = (st.session_state.get("submode") == "With Ground Truth")
+
+        # 3 cols in GT mode, otherwise 2 cols
+        col_spec = [1.5, 1, 1] if gt_mode else [1.5, 1]
+        top_cols = st.columns(col_spec)
+
+        # ---------- LEFT: file name + raw image ----------
         with top_cols[0]:
             st.markdown(f"**{file_obj.name}**")
             st.image(img, use_container_width=True)
 
+        # ---------- MIDDLE: banner + FOV controls ----------
         with top_cols[1]:
-            banner_txt = "✅ SELECTED" if is_selected else "NOT SELECTED"
-            banner_col = "#0da2a2" if is_selected else "#c45959"
-            st.markdown(
-                f"<div style='font-size:1.35rem;font-weight:500;color:{banner_col};"
-                f"margin:.25rem 0 .5rem 0'>{banner_txt}</div>",
-                unsafe_allow_html=True
-            )
-
-            nonce = st.session_state["fov_uploader_nonce"].get(stem, 0)
+            # FOV uploader
             st.markdown("##### Upload FOV (Field of View)")
+            nonce = st.session_state["fov_uploader_nonce"].get(stem, 0)
             fov_up = st.file_uploader(
                 f"FOV for {stem}",
                 type=["png","jpg","jpeg","tif"],
@@ -275,10 +275,10 @@ if img_files:
             else:
                 st.caption("No FOV paired yet.")
 
-            st.divider()
-            # --- Ground Truth uploader (only show in "With Ground Truth" mode) ---
-            if st.session_state.get("submode") == "With Ground Truth":
-                st.markdown("##### Upload Ground Truth Image")
+        # ---------- RIGHT (only in GT mode): GT controls ----------
+        if gt_mode:
+            with top_cols[2]:
+                st.markdown("##### Upload Ground Truth (GT)")
 
                 gt_nonce = st.session_state["gt_uploader_nonce"].get(stem, 0)
                 gt_up = st.file_uploader(
@@ -306,13 +306,21 @@ if img_files:
                     st.caption("No Ground Truth paired yet.")
 
 
-        c_sel1, c_sel2 = st.columns(2)
-        with c_sel1:
-            if st.button("Select this image", key=f"select_{stem}", use_container_width=True, disabled=is_selected):
-                st.session_state["selected_stem"] = stem; st.rerun()
-        with c_sel2:
-            if st.button("Unselect", key=f"unselect_{stem}", use_container_width=True, disabled=not is_selected):
-                st.session_state["selected_stem"] = None; st.rerun()
+
+        
+        # --- Single toggle-style button (Select / Unselect) ---
+        is_selected = (st.session_state.get("selected_stem") == stem)
+
+        label = "Unselect" if is_selected else "Select"
+        btn_type = "secondary" if is_selected else "primary"   # color reflects state
+
+        if st.button(label, key=f"toggle_select_{stem}", type=btn_type, use_container_width=True):
+            if is_selected:
+                st.session_state["selected_stem"] = None
+            else:
+                st.session_state["selected_stem"] = stem
+            st.rerun()
+
 
         if st.button("Delete Image / Image Pair", key=f"del_img_{stem}", use_container_width=True):
             delete_image_by_stem(stem)
