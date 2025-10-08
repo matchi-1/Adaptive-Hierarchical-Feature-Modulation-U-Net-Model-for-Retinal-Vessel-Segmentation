@@ -7,6 +7,7 @@ from PIL import Image
 import streamlit as st
 from pathlib import Path
 import sys 
+import cv2
 
 # Model checkpoint file
 #MODEL_CHECKPOINT = Path("outputs/checkpoints/[DRIVE] baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth")
@@ -166,15 +167,33 @@ def load_seg_model(device: str = "auto", dataset: Optional[str] = None, ckpt_key
     return (model, dev, meta)
 
 
-def load_fov_1hw_from_bytes(fov_bytes: bytes, target_size: int, stem: str = "fov") -> np.ndarray:
-    tmp = PROJECT_ROOT / f"__tmp_{stem}_fov.png"
-    Path(tmp).write_bytes(fov_bytes)
-    try:
-        fov_1hw = preprocess_mask(str(tmp), target_size=target_size).astype(np.float32)  # [1,H,W] in {0,1}
-    finally:
-        with contextlib.suppress(Exception):
-            tmp.unlink()
-    return fov_1hw  # shape [1,H,W], float32 {0,1}
+def load_fov_1hw_from_bytes(fov_bytes: bytes, target_size: int) -> np.ndarray:
+    """
+    Decode FOV mask bytes -> grayscale -> isotropic resize+pad -> Otsu -> [1,H,W] float32 in {0,1}.
+    Mirrors preprocess_mask but works directly from bytes (no temp files).
+    """
+    # Decode from bytes (keeps palette/alpha if present)
+    buf = np.frombuffer(fov_bytes, dtype=np.uint8)
+    m = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)  # uint8/uint16, gray/RGB/RGBA
+    if m is None:
+        raise ValueError("Could not decode FOV bytes")
+
+    # Convert to 8-bit grayscale
+    if m.dtype != np.uint8:
+        m = cv2.convertScaleAbs(m)  # safe 16-bit -> 8-bit, etc.
+    if m.ndim == 3:
+        if m.shape[2] == 4:
+            m = cv2.cvtColor(m, cv2.COLOR_BGRA2GRAY)
+        else:
+            m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+
+    # Same geometry as training: isotropic resize + pad (nearest for masks)
+    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)
+
+    # Hard binary via Otsu, then cast to {0,1} float32 and add channel dim
+    m = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    m = (m > 0).astype(np.float32)
+    return np.expand_dims(m, axis=0).astype(np.float32)  # [1,H,W]
 
 
 def render_telemetry_sidebar_footer():
@@ -702,7 +721,7 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
 
         fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
         if fov_entry and fov_entry.get("bytes"):
-            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], IMAGE_SIZE, stem=sel_stem)  # iso-resize+pad + Otsu
+            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], target_size=IMAGE_SIZE)
         else:
             # fallback: use nonzero (pads stay 0) from preprocessed image
             fov_1hw = (img_1hw > 0).astype(np.float32)
