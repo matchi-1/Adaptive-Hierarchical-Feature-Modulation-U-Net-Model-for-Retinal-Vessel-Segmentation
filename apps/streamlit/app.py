@@ -69,6 +69,29 @@ def make_unique_name(name: str, already: set[str]) -> str:
         idx += 1
     return candidate
 
+# --------------------- Comparison mode -------------------------
+def make_diff_rgb(pred01_u8: np.ndarray, gt01_u8: np.ndarray) -> np.ndarray:
+    """
+    pred01_u8, gt01_u8: [H,W] in {0,1}
+    Returns RGB where:
+      white = TP (correct vessel)
+      red   = FN (missed GT)
+      light blue = FP (over-seg)
+    """
+    pred = (pred01_u8.astype(np.uint8) > 0).astype(np.uint8)
+    gt   = (gt01_u8.astype(np.uint8) > 0).astype(np.uint8)
+
+    tp = (pred == 1) & (gt == 1)
+    fn = (pred == 0) & (gt == 1)
+    fp = (pred == 1) & (gt == 0)
+
+    out = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
+    out[tp] = [255, 255, 255]       # white
+    out[fn] = [255,   0,   0]       # red
+    out[fp] = [153, 204, 255]       # light blue
+    return out
+
+
 # --- Proxy so we can override .name but keep file-like behavior for PIL/Streamlit ---
 class UploadedFileProxy:
     def __init__(self, uf, new_name: str):
@@ -551,90 +574,125 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
             st.rerun()
 
 
-# --- Ground Truth vs Prediction and metrics section -----
-if (
-    st.session_state.get("submode") == "With Ground Truth"
-    and sel_stem
-    and has_result
-):
+# --- Ground Truth vs Prediction / Comparison section ---
+if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_result:
     gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
     if gt_entry and gt_entry.get("bytes"):
         st.divider()
-        st.markdown("### Ground Truth vs Prediction")
+        is_cmp_mode = (st.session_state.get("mode_top") == "Comparison (UNet vs MATFHI)")
+        st.markdown("### " + ("UNet vs MATFHI (with Ground Truth)" if is_cmp_mode else "Ground Truth vs Prediction"))
 
-        col_raw, col_gt, col_pred, col_cmp = st.columns([1, 1, 1, 1])
-
-        # Ensure geometry matches model output
+        # Geometry
         ds = st.session_state.get("dataset_choice", "DRIVE")
         IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
 
-        # --- 1) GT as (1,H,W) -> vis u8 ---
-        gt_1hw = preprocess_mask_from_bytes(gt_entry["bytes"], target_size=IMAGE_SIZE)  # (1,H,W) {0,1}
-        gt = (gt_1hw[0] > 0.5).astype(np.uint8)                                         # (H,W) {0,1}
+        # GT in model geometry
+        gt_1hw = preprocess_mask_from_bytes(gt_entry["bytes"], target_size=IMAGE_SIZE)  # (1,H,W)
+        gt = (gt_1hw[0] > 0.5).astype(np.uint8)
         gt_vis = (gt * 255).astype(np.uint8)
 
-        # --- 2) Prediction from stored probs + current threshold ---
-        thr = st.session_state.get("threshold", 0.5)
-        prob_np = st.session_state["results"][sel_stem]["probs"]                        # (H,W) float32
-        pred = (prob_np >= thr).astype(np.uint8)                                        # (H,W) {0,1}
-        pred_vis = (pred * 255).astype(np.uint8)
+        # From results
+        res = st.session_state["results"][sel_stem]
+        pre_img = res.get("pre", None)
 
-        with col_raw:
-            st.image(pre_img, caption="Preprocessed Image", use_container_width=True, clamp=True)
-        with col_gt:
-            st.image(gt_vis, caption="Ground Truth", use_container_width=True)
-
-        with col_pred:
-            st.image(pred_vis, caption="Predicted Vessel Map (MATHFI)", use_container_width=True)
-
-        with col_cmp:
-            # Mutually exclusive difference map
-            tp = (pred == 1) & (gt == 1)   # correct vessel
-            fn = (pred == 0) & (gt == 1)   # missed vessel (GT only)
-            fp = (pred == 1) & (gt == 0)   # over-segmentated (pred only)
-
-            diff_rgb = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
-            diff_rgb[tp] = [255, 255, 255]          # white (correct vessels)
-            diff_rgb[fn] = [255,   0,   0]          # (red missed GT)
-            diff_rgb[fp] = [204, 255, 0]          # yellow (over-segmented)
-
-            st.image(
-                diff_rgb,
-                caption="Comparison Result",
-                use_container_width=True
-            )
-
-
-        # --- 3) Metrics (GLOBAL, not FOV-masked) ---
-        metrics_all = compute_metrics_single(
-            pred_probs=prob_np,      # (H,W) float
-            gt_1hw=gt_1hw,           # (1,H,W) {0,1}
-            fov_1hw=None,            # no FOV masking
-            threshold=thr,
-            compute_auc=True,
-        )
-
-        prediction_metrics_col = st.columns([1.5,0.2,1.5,0.75,1.25])
-        with prediction_metrics_col[0]:
-            render_metric_cards_main(metrics_all)
-        
-        with prediction_metrics_col[2]:
-            render_metric_cards_others(metrics_all)
-
-        with prediction_metrics_col[4]:# Tiny legend row
+        # --- Common legend (right aligned under the grid) ---
+        def _legend():
             st.markdown(
                 """
-                <div style="display:flex; gap:0.5rem; align-items:center; font-size:0.9rem;">
-                  <span style="display:inline-block;width:1.5rem;height:0.85rem;background:#ffffff;border:1px solid #888;"></span> Correct (True Postive)
-                  <span style="display:inline-block;width:1.5rem;height:0.85;background:#ff0000;border:1px solid #888;"></span> Missed (False Negative)
-                  <span style="display:inline-block;width:1.5rem;height:0.85;background:#ccff00;border:1px solid #888;"></span> Over-segmented (False Positive)
+                <div style="display:flex; gap:.6rem; align-items:center; font-size:0.9rem; justify-content:flex-end;">
+                  <span style="display:inline-block;width:14px;height:14px;background:#ffffff;border:1px solid #888;"></span> True Positive
+                  <span style="display:inline-block;width:14px;height:14px;background:#ff0000;border:1px solid #888;"></span> Missed (FN)
+                  <span style="display:inline-block;width:14px;height:14px;background:#99ccff;border:1px solid #888;"></span> Over-segmented (FP)
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
+        # ----- Row 1: MATFHI -----
+        col_p1, col_g1, col_pred1, col_cmp1 = st.columns([1,1,1,1])
+        with col_p1:
+            if pre_img is not None:
+                st.image(pre_img, caption="Preprocessed", use_container_width=True, clamp=True)
+        with col_g1:
+            st.image(gt_vis, caption="Ground Truth", use_container_width=True)
+
+        thr = st.session_state.get("threshold", 0.5)
+        prob_m = res["matfhi"]["probs"] if "matfhi" in res else res["probs"]
+        pred_m = (prob_m >= thr).astype(np.uint8)
+        with col_pred1:
+            st.image((pred_m * 255).astype(np.uint8), caption="Predicted (MATFHI)", use_container_width=True)
+        with col_cmp1:
+            st.image(make_diff_rgb(pred_m, gt), caption="Comparison (MATFHI)", use_container_width=True)
+
+        # ----- Row 2: UNet (only in comparison mode and when we have it) -----
+        if is_cmp_mode and "unet" in res:
+            col_p2, col_g2, col_pred2, col_cmp2 = st.columns([1,1,1,1])
+            with col_p2:
+                if pre_img is not None:
+                    st.image(pre_img, caption="Preprocessed", use_container_width=True, clamp=True)
+            with col_g2:
+                st.image(gt_vis, caption="Ground Truth", use_container_width=True)
+
+            prob_u = res["unet"]["probs"]
+            pred_u = (prob_u >= thr).astype(np.uint8)
+            with col_pred2:
+                st.image((pred_u * 255).astype(np.uint8), caption="Predicted (UNet)", use_container_width=True)
+            with col_cmp2:
+                st.image(make_diff_rgb(pred_u, gt), caption="Comparison (UNet)", use_container_width=True)
+
+            _legend()
+
+        # ----- Metrics -----
+        from apps.streamlit.lib.metrics_ui import compute_metrics_single, render_metric_cards_main, render_metric_cards_others
+
+        metrics_m = compute_metrics_single(pred_probs=prob_m, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
+
+        if not is_cmp_mode or "unet" not in res:
+            st.markdown("#### MATFHI Metrics")
+            cols = st.columns([1.5,0.25,1.5])
+            with cols[0]:
+                render_metric_cards_main(metrics_m)
+            with cols[2]:
+                render_metric_cards_others(metrics_m)
+        else:
+            # Both models + deltas
+            metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
+
+            st.markdown("#### Metrics: MATFHI vs UNet")
+            row = st.columns([1.5,0.25,1.5,0.25,1.25])
+            with row[0]:
+                st.markdown("**MATFHI**")
+                render_metric_cards_main(metrics_m)
+            with row[2]:
+                st.markdown("**UNet**")
+                render_metric_cards_main(metrics_u)
+            with row[4]:
+                # Delta panel (MATFHI - UNet)
+                st.markdown("**Δ (MATFHI − UNet)**")
+
+                def fmt(x):
+                    try:
+                        return f"{x:+.3f}"
+                    except Exception:
+                        return "—"
+
+                primary = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
+                for k in primary:
+                    if k in metrics_m and k in metrics_u:
+                        dv = float(metrics_m[k]) - float(metrics_u[k])
+                        arrow = "↑" if dv > 0 else ("↓" if dv < 0 else "–")
+                        st.metric(k, fmt(dv), delta=None, help=f"{arrow}  MATFHI minus UNet")
+
+            # Extended table beneath
+            row2 = st.columns([1.5,0.25,1.5])
+            with row2[0]:
+                render_metric_cards_others(metrics_m)
+            with row2[2]:
+                render_metric_cards_others(metrics_u)
+
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
+
 
 
 # ---------------------- Comparison scaffold ----------------------

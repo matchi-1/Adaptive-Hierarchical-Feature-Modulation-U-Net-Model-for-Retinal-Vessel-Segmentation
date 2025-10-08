@@ -2,7 +2,7 @@ from typing import Optional, Tuple, Dict, Any
 import streamlit as st
 import torch
 from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
-from .config import DATASET_CHECKPOINTS
+from .config import DATASET_CHECKPOINTS, UNET_CHECKPOINTS
 from pathlib import Path
 
 @st.cache_resource(show_spinner=False)
