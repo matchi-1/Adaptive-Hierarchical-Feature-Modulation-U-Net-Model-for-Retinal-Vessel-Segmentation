@@ -150,51 +150,52 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
 
 
 def render_delta_cards_grid(metrics_m: dict, metrics_u: dict):
-    """
-    Show Δ (MATFHI − UNet) as a 2×3 grid.
-    Light green if increase, light red if decrease, gray if equal.
-    """
-    import math
-    import numpy as np
-    import streamlit as st
+    """Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing."""
+    primary = ["Sensitivity", "Specificity", "clDice",
+               "Accuracy", "IoU", "ROC_AUC"]
 
-    primary = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
-
-    def _card_html(name: str, delta_val: float | None):
-        if delta_val is None or (isinstance(delta_val, float) and (math.isnan(delta_val) or math.isinf(delta_val))):
-            bg = "#f3f4f6"; arrow, val = "–", "—"
-        else:
-            if delta_val > 0:
-                bg, arrow = "#029f0f", "↑"   # light green
-            elif delta_val < 0:
-                bg, arrow = "#ff092e", "↓"   # light red
-            else:
-                bg, arrow = "#f3f4f6", "–"   # neutral
-            val = f"{abs(delta_val):.3f}"
-
-        return f"""
-        <div style="border:1px solid #ddd;border-radius:12px;padding:.6rem .8rem;">
-          <div style="font-size:.9rem;color:#555;margin-bottom:.15rem">{name}</div>
-          <div style="font-size:1.15rem;font-weight:700;letter-spacing:.2px">{arrow} {val}</div>
-          <div style="font-size:.75rem;color:#7a7a7a;margin-top:.1rem">MATFHI − UNet</div>
-        </div>
-        """
-
-    # compute deltas in order
-    deltas = []
-    for k in primary:
+    def _delta(k: str):
         try:
-            if k in metrics_m and k in metrics_u:
-                m = float(metrics_m[k]); u = float(metrics_u[k])
-                dv = m - u
-            else:
-                dv = None
+            m = float(metrics_m.get(k, float("nan")))
+            u = float(metrics_u.get(k, float("nan")))
+            dv = m - u
+            if math.isnan(dv) or math.isinf(dv):
+                return None
+            return dv
         except Exception:
-            dv = None
-        deltas.append((k, dv))
+            return None
 
-    # render 2 rows × 3 cols
-    for row_keys in (deltas[:3], deltas[3:6]):
-        cols = st.columns(3)
-        for i, (name, dv) in enumerate(row_keys):
-            cols[i].markdown(_card_html(name, dv), unsafe_allow_html=True)
+    def _cell(col, name: str, dv: float | None):
+        # label
+        label_html = f"<div style='font-size:0.90rem; color:white;'>{name}</div>"
+
+        if dv is None:
+            val_html = "<div style=' font-size:2rem; font-weight:500; color:#6b7280'>—</div>"
+        else:
+            if dv > 0:
+                color, arrow, val = "#16a34a", "↑ ", abs(dv)   # green
+            elif dv < 0:
+                color, arrow, val = "#ef4444", "↓ ", abs(dv)   # red
+            else:
+                color, arrow, val = "#6b7280", "– ", 0.0       # gray
+            val_html = (
+                f"<div style=' font-size:2rem; font-weight:500; color:{color}'>"
+                f"{arrow}{val:.3f}"
+                f"</div>"
+            )
+
+
+        col.markdown(label_html + val_html, unsafe_allow_html=True)
+
+    # Row 1
+    cols = st.columns(3)
+    for col, k in zip(cols, primary[:3]):
+        _cell(col, k, _delta(k))
+
+    # Add vertical space between the two rows (this controls the gap)
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+
+    # Row 2
+    cols = st.columns(3)
+    for col, k in zip(cols, primary[3:]):
+        _cell(col, k, _delta(k))

@@ -673,6 +673,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
                 render_delta_cards_grid(metrics_m, metrics_u)
 
             # Extended table beneath
+            st.markdown("#####")
             row2 = st.columns([1.5,0.25,1.5])
             with row2[0]:
                 render_metric_cards_others(metrics_m, "MATHFI")
