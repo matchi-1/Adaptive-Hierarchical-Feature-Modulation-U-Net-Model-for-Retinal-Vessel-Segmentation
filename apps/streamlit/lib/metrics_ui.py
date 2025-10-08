@@ -103,14 +103,17 @@ def compute_metrics_single(
 
     return out
 
-def _fmt(v):
-        try:
-            if v is None: return "—"
-            v = float(v)
-            if math.isnan(v) or math.isinf(v): return "—"
-            return f"{v:.3f}"
-        except Exception:
-            return "—"
+DEC_PLACES = 4
+
+def _fmt(v, decimals: int = DEC_PLACES):
+    import math
+    try:
+        if v is None: return "—"
+        v = float(v)
+        if math.isnan(v) or math.isinf(v): return "—"
+        return f"{v:.{decimals}f}"
+    except Exception:
+        return "—"
 
 def render_metric_cards_main(metrics: dict[str, float], model_name):
     """
@@ -149,10 +152,10 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
                 cols[i % 3].metric(k, _fmt(metrics.get(k)))
 
 
-def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None):
+def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None, decimals: int = DEC_PLACES):
     """
     Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing.
-    Arrow/color are determined *after* rounding the delta to 3 decimals.
+    Arrow/color are determined *after* rounding the delta to `decimals` places.
     """
     import math
     import streamlit as st
@@ -169,7 +172,7 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
             dv = m - u
             if math.isnan(dv) or math.isinf(dv):
                 return None
-            return round(dv, 3)  # <-- round first; use this for both arrow & value
+            return round(dv, decimals)  # <<< was 3
         except Exception:
             return None
 
@@ -179,16 +182,15 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
         if dv_r is None:
             val_html = "<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:#6b7280'>—</div>"
         else:
-            # Decide arrow/color from the rounded value so 0.000 is neutral
             if dv_r > 0:
-                color, arrow, val = "#16a34a", "↑ ", abs(dv_r)   # green
+                color, arrow, val = "#16a34a", "↑ ", abs(dv_r)
             elif dv_r < 0:
-                color, arrow, val = "#ef4444", "↓ ", abs(dv_r)   # red
+                color, arrow, val = "#ef4444", "↓ ", abs(dv_r)
             else:
-                color, arrow, val = "#6b7280", "– ", 0.0         # gray
+                color, arrow, val = "#6b7280", "– ", 0.0
             val_html = (
                 f"<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:{color}'>"
-                f"{arrow}{val:.3f}"
+                f"{arrow}{val:.{decimals}f}"   # <<< was .3f
                 f"</div>"
             )
 
@@ -197,18 +199,16 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
     if title:
         st.markdown(f"#### {title}")
 
-    # Row 1
     cols = st.columns(3)
     for col, k in zip(cols, keys[:3]):
         _cell(col, k, _delta_rounded(k))
 
-    # gap between rows
     st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
 
-    # Row 2
     cols = st.columns(3)
     for col, k in zip(cols, keys[3:6]):
         _cell(col, k, _delta_rounded(k))
+
 
 
 
