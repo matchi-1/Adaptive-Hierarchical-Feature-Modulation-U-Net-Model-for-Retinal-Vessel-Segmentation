@@ -2,18 +2,18 @@ from pathlib import Path
 
 # Model checkpoints
 DATASET_CHECKPOINTS = {
-    "DRIVE":     Path("outputs/checkpoints/[DRIVE] baseunet_dpcn_6_iters_64ch_msu_cbam_hassskip_w_augs_newDataloader_drive_patching.pth"),
-    "CHASE-DB1": Path("outputs/checkpoints/[CHASEDB1] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_CHASEDB1_patching.pth"),
-    "STARE":     Path("outputs/checkpoints/[STARE] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_STARE_patching.pth"),
-    "ALL":       Path("outputs/checkpoints/[ALL] baseunet_dpcn_6_iters_64ch_2hl_64rt_cbam16_msu_cbam_hassskip_50_epochs_w_augs_newDataloader_all_datasets_patching.pth"),
+    "DRIVE":     Path("outputs/checkpoints/[DRIVE] MATHFI.pth"),
+    "CHASE-DB1": Path("outputs/checkpoints/[CHASEDB1] MATHFI.pth"),
+    "STARE":     Path("outputs/checkpoints/[STARE] MATHFI.pth"),
+    "ALL":       Path("outputs/checkpoints/[ALL] MATHFI.pth"),
 }
 
 # Unet checkpoints
 UNET_CHECKPOINTS = {
-    "DRIVE":     Path("outputs/checkpoints/unet/[CHASEDB1_UNET] baseunet_w_halfaug_newDataloader_chasedb1.pth"), # change to drive
-    "CHASE-DB1": Path("outputs/checkpoints/unet/[CHASEDB1_UNET] baseunet_w_halfaug_newDataloader_chasedb1.pth"),
-    "STARE":     Path("outputs/checkpoints/unet/[STARE_UNET] baseunet_w_halfaug_newDataloader_stare.pth"),
-    "ALL":       Path("outputs/checkpoints/unet/[CHASEDB1_UNET] baseunet_w_halfaug_newDataloader_chasedb1.pth"), # change to all
+    "DRIVE":     Path("outputs/checkpoints/unet/[DRIVE_UNET] base_unet.pth"), 
+    "CHASE-DB1": Path("outputs/checkpoints/unet/[CHASEDB1_UNET] base_unet.pth"),
+    "STARE":     Path("outputs/checkpoints/unet/[STARE_UNET] base_unet.pth"),
+    "ALL":       Path("outputs/checkpoints/unet/[ALL_UNET] base_unet.pth"),
 }
 
 IMAGE_SIZE_BY_DATASET = {k: 512 for k in DATASET_CHECKPOINTS.keys()}
