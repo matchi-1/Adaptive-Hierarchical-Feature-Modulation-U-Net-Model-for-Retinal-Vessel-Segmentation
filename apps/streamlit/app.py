@@ -448,7 +448,7 @@ with viewer:
                     st.image(pre_img, caption=f"Preprocessed Image | {pre_img.shape[1]} × {pre_img.shape[0]}px |",
                              use_container_width=True, clamp=True)
                 else:
-                    st.warning("No preprocessed image saved.")
+                    st.warning("⚠️ Run inference to view preprocessed image.")
 
             # -------------- Predicted (MATHFI) --------------
             if res_m:
