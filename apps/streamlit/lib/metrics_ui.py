@@ -2,7 +2,7 @@ from typing import Optional, Dict
 import numpy as np
 import cv2
 
-# pull these from your metrics module
+# metrics module
 from src.training.metrics import (
     confusion_counts, dice, iou,
     acc_from_counts, recall_from_counts, specificity_from_counts,

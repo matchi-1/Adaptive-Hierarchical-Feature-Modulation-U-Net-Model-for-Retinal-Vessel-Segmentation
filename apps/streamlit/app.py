@@ -473,7 +473,7 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
         st.session_state["done_once"] = True
         st.rerun()
 
-# --- After the buttons block in the Viewer (still inside `with viewer:`) ---
+# --- Ground Truth vs Prediction and metrics section -----
 if (
     st.session_state.get("submode") == "With Ground Truth"
     and sel_stem
@@ -484,48 +484,73 @@ if (
         st.divider()
         st.markdown("### Ground Truth vs Prediction")
 
-        col_gt, col_pred, col_scores = st.columns([1, 1, 1])
+        col_gt, col_pred, col_cmp = st.columns([1, 1, 1])
 
-        # Ensure we match model geometry by dataset
+        # Ensure geometry matches model output
         ds = st.session_state.get("dataset_choice", "DRIVE")
         IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
 
-        # 1) Prepare GT (1,H,W) float32 -> 0/255 u8 for display
+        # --- 1) GT as (1,H,W) -> vis u8 ---
         gt_1hw = preprocess_mask_from_bytes(gt_entry["bytes"], target_size=IMAGE_SIZE)  # (1,H,W) {0,1}
-        gt_vis = (gt_1hw[0] * 255).astype(np.uint8)
+        gt = (gt_1hw[0] > 0.5).astype(np.uint8)                                         # (H,W) {0,1}
+        gt_vis = (gt * 255).astype(np.uint8)
 
-        # 2) Prepare Pred: threshold the stored probs with current slider value (or default 0.5)
+        # --- 2) Prediction from stored probs + current threshold ---
         thr = st.session_state.get("threshold", 0.5)
-        prob_np = st.session_state["results"][sel_stem]["probs"]    # (H,W) float32
-        pred_bin = (prob_np >= thr).astype(np.uint8)                # (H,W) {0,1}
-        pred_vis = (pred_bin * 255).astype(np.uint8)
-
-        # 3) Prepare FOV mask for metrics (same geometry)
-        fov_entry = st.session_state.get("fov_by_stem", {}).get(sel_stem)
-        if fov_entry and fov_entry.get("bytes"):
-            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], target_size=IMAGE_SIZE)  # (1,H,W) {0,1}
-        else:
-            fov_1hw = np.ones_like(gt_1hw, dtype=np.float32)
+        prob_np = st.session_state["results"][sel_stem]["probs"]                        # (H,W) float32
+        pred = (prob_np >= thr).astype(np.uint8)                                        # (H,W) {0,1}
+        pred_vis = (pred * 255).astype(np.uint8)
 
         with col_gt:
-            st.image(gt_vis, caption=f"Ground Truth", use_container_width=True)
+            st.image(gt_vis, caption="Ground Truth", use_container_width=True)
 
         with col_pred:
             st.image(pred_vis, caption="Predicted Vessel Map (MATHFI)", use_container_width=True)
 
-        with col_scores:
-            # Compute all metrics once (masked to FOV), then render pretty
-            metrics_all = compute_metrics_single(
-                pred_probs=prob_np,      # (H,W) float
-                gt_1hw=gt_1hw,           # (1,H,W) {0,1}
-                fov_1hw=fov_1hw,         # (1,H,W) {0,1} or ones
-                threshold=thr,
-                compute_auc=True,
+        with col_cmp:
+            # Mutually exclusive difference map
+            tp = (pred == 1) & (gt == 1)   # correct vessel
+            fn = (pred == 0) & (gt == 1)   # missed vessel (GT only)
+            fp = (pred == 1) & (gt == 0)   # over-seg (pred only)
+
+            diff_rgb = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
+            diff_rgb[tp] = [255, 255, 255]          # white (correct vessels)
+            diff_rgb[fn] = [255,   0,   0]          # (red missed GT)
+            diff_rgb[fp] = [0, 255, 85]          # light blue (over-seg)
+
+            st.image(
+                diff_rgb,
+                caption="Comparison (white=TP, red=missed GT, green=over-seg)",
+                use_container_width=True
             )
-            render_metric_cards(metrics_all) 
+
+            # Tiny legend row
+            st.markdown(
+                """
+                <div style="display:flex; gap:12px; align-items:center; font-size:0.9rem;">
+                  <span style="display:inline-block;width:14px;height:14px;background:#ffffff;border:1px solid #888;"></span> True Positive
+                  <span style="display:inline-block;width:14px;height:14px;background:#ff0000;border:1px solid #888;"></span> Missed (FN)
+                  <span style="display:inline-block;width:14px;height:14px;background:#00ff55;border:1px solid #888;"></span> Over-seg (FP)
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        # --- 3) Metrics (GLOBAL, not FOV-masked) ---
+        metrics_all = compute_metrics_single(
+            pred_probs=prob_np,      # (H,W) float
+            gt_1hw=gt_1hw,           # (1,H,W) {0,1}
+            fov_1hw=None,            # no FOV masking
+            threshold=thr,
+            compute_auc=True,
+        )
+
+        # Render metrics below the three columns
+        render_metric_cards(metrics_all)
 
     else:
-        st.info("Upload a Ground Truth mask in the Selection panel to see side-by-side and metrics.")
+        st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
+
 
 # ---------------------- Comparison scaffold ----------------------
 if st.session_state["mode_top"] == "Comparison (UNet vs MATFHI)":
