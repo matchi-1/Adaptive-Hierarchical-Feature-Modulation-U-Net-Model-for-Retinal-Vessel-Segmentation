@@ -132,7 +132,7 @@ footer = st.sidebar.container()
 
 with top:
     st.markdown("# MATHFI")
-    st.selectbox("Top Mode", ["Single Model (MATFHI)", "Comparison (UNet vs MATFHI)"],
+    st.selectbox("Top Mode", ["Single Model (MATHFI)", "Comparison (UNet vs MATHFI)"],
                  index=0, key="mode_top")
     st.radio("Run Mode", ["Predict Only", "With Ground Truth"], key="submode")
 
@@ -501,9 +501,9 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
             # NOTE: UNet does not consume fov; we still gate input beforehand for fairness.
             thr = st.session_state.get("threshold", 0.5)
 
-            # ---- 1) MATFHI inference ----
-            stage_runner(stage, "Predicting (MATFHI)…"); time.sleep(0.02)
-            mdl_matfhi, dev, _ = load_mathfi_model(dataset=ds)
+            # ---- 1) MATHFI inference ----
+            stage_runner(stage, "Predicting (MATHFI)…"); time.sleep(0.02)
+            mdl_mathfi, dev, _ = load_mathfi_model(dataset=ds)
             x = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev)
             fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)
 
@@ -512,9 +512,9 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
                 use_amp = (dev == "cuda")
                 amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
                 with amp_ctx:
-                    logits_m = mdl_matfhi(x, fov=fov) if USE_FOV_IN_MODEL else mdl_matfhi(x)
+                    logits_m = mdl_mathfi(x, fov=fov) if USE_FOV_IN_MODEL else mdl_mathfi(x)
             probs_m = torch.sigmoid(logits_m)
-            t_matfhi = (time.time() - t0) * 1000.0
+            t_mathfi = (time.time() - t0) * 1000.0
 
             # Gate probs again to be safe
             probs_m = probs_m * (fov > 0.5).float()
@@ -526,19 +526,19 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
             results_entry = {
                 "pre": pre_img_vis,
                 "overlay_base_rgb": overlay_base_rgb,
-                "timings": {"total_ms": t_matfhi},
+                "timings": {"total_ms": t_mathfi},
                 "device": dev,
                 "probs": prob_np_m,             # keep top-level for single-mode UI
                 "mask": mask_u8_m,
-                "matfhi": {                     # nested, used in comparison UI
+                "mathfi": {                     # nested, used in comparison UI
                     "probs": prob_np_m,
                     "mask":  mask_u8_m,
-                    "timings": {"total_ms": t_matfhi},
+                    "timings": {"total_ms": t_mathfi},
                     "device": dev,
                 }
             }
 
-            if st.session_state.get("mode_top") == "Comparison (UNet vs MATFHI)":
+            if st.session_state.get("mode_top") == "Comparison (UNet vs MATHFI)":
                 stage_runner(stage, "Predicting (UNet)…"); time.sleep(0.02)
                 mdl_unet, dev2, _ = load_unet_model(dataset=ds, checkpoints=UNET_CHECKPOINTS)
                 x2 = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev2)
@@ -552,7 +552,7 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
                 probs_u = torch.sigmoid(logits_u)
                 t_unet = (time.time() - t1) * 1000.0
 
-                # Gate probs (post) to mirror MATFHI path
+                # Gate probs (post) to mirror MATHFI path
                 probs_u = probs_u * (torch.from_numpy(fov_1hw).unsqueeze(0).to(dev2) > 0.5).float()
                 pred01_u = (probs_u >= thr).float()
                 mask_u8_u = (pred01_u[0,0].cpu().numpy() * 255).astype(np.uint8)
@@ -579,8 +579,8 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
     gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
     if gt_entry and gt_entry.get("bytes"):
         st.divider()
-        is_cmp_mode = (st.session_state.get("mode_top") == "Comparison (UNet vs MATFHI)")
-        st.markdown("### " + ("UNet vs MATFHI (with Ground Truth)" if is_cmp_mode else "Ground Truth vs Prediction"))
+        is_cmp_mode = (st.session_state.get("mode_top") == "Comparison (UNet vs MATHFI)")
+        st.markdown("### " + ("UNet vs MATHFI (with Ground Truth)" if is_cmp_mode else "Ground Truth vs Prediction"))
 
         # Geometry
         ds = st.session_state.get("dataset_choice", "DRIVE")
@@ -608,7 +608,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
                 unsafe_allow_html=True
             )
 
-        # ----- Row 1: MATFHI -----
+        # ----- Row 1: MATHFI -----
         col_p1, col_g1, col_pred1, col_cmp1 = st.columns([1,1,1,1])
         with col_p1:
             if pre_img is not None:
@@ -617,12 +617,12 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             st.image(gt_vis, caption="Ground Truth", use_container_width=True)
 
         thr = st.session_state.get("threshold", 0.5)
-        prob_m = res["matfhi"]["probs"] if "matfhi" in res else res["probs"]
+        prob_m = res["mathfi"]["probs"] if "mathfi" in res else res["probs"]
         pred_m = (prob_m >= thr).astype(np.uint8)
         with col_pred1:
-            st.image((pred_m * 255).astype(np.uint8), caption="Predicted (MATFHI)", use_container_width=True)
+            st.image((pred_m * 255).astype(np.uint8), caption="Predicted (MATHFI)", use_container_width=True)
         with col_cmp1:
-            st.image(make_diff_rgb(pred_m, gt), caption="Comparison (MATFHI)", use_container_width=True)
+            st.image(make_diff_rgb(pred_m, gt), caption="Comparison (MATHFI)", use_container_width=True)
 
         # ----- Row 2: UNet (only in comparison mode and when we have it) -----
         if is_cmp_mode and "unet" in res:
@@ -648,7 +648,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
         metrics_m = compute_metrics_single(pred_probs=prob_m, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
 
         if not is_cmp_mode or "unet" not in res:
-            st.markdown("#### MATFHI Metrics")
+            st.markdown("#### MATHFI Metrics")
             cols = st.columns([1.5,0.25,1.5])
             with cols[0]:
                 render_metric_cards_main(metrics_m)
@@ -658,17 +658,17 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             # Both models + deltas
             metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
 
-            st.markdown("#### Metrics: MATFHI vs UNet")
+            st.markdown("#### Metrics: MATHFI vs UNet")
             row = st.columns([1.5,0.25,1.5,0.25,1.25])
             with row[0]:
-                st.markdown("**MATFHI**")
+                st.markdown("**MATHFI**")
                 render_metric_cards_main(metrics_m)
             with row[2]:
                 st.markdown("**UNet**")
                 render_metric_cards_main(metrics_u)
             with row[4]:
-                # Delta panel (MATFHI - UNet)
-                st.markdown("**Δ (MATFHI − UNet)**")
+                # Delta panel (MATHFI - UNet)
+                st.markdown("**Δ (MATHFI − UNet)**")
 
                 def fmt(x):
                     try:
@@ -681,7 +681,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
                     if k in metrics_m and k in metrics_u:
                         dv = float(metrics_m[k]) - float(metrics_u[k])
                         arrow = "↑" if dv > 0 else ("↓" if dv < 0 else "–")
-                        st.metric(k, fmt(dv), delta=None, help=f"{arrow}  MATFHI minus UNet")
+                        st.metric(k, fmt(dv), delta=None, help=f"{arrow}  MATHFI minus UNet")
 
             # Extended table beneath
             row2 = st.columns([1.5,0.25,1.5])
@@ -696,5 +696,5 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
 
 
 # ---------------------- Comparison scaffold ----------------------
-if st.session_state["mode_top"] == "Comparison (UNet vs MATFHI)":
-    st.warning("Comparison mode scaffolded. Later: load UNet + MATFHI and render side-by-side with the same inputs/threshold.")
+if st.session_state["mode_top"] == "Comparison (UNet vs MATHFI)":
+    st.warning("Comparison mode scaffolded. Later: load UNet + MATHFI and render side-by-side with the same inputs/threshold.")
