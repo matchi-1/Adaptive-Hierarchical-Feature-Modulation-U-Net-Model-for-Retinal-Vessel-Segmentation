@@ -20,7 +20,7 @@ USE_FOV_IN_MODEL = False  # set True ONLY if the checkpoint was trained using mo
 
 # Model + preprocessing utilities
 from src.models.wrappers.dpcn_concat_unet import DPCNConcatUNet
-from src.data.preprocessing import preprocess_image_retina, preprocess_mask, _iso_resize_and_pad
+from src.data.preprocessing import _iso_resize_and_pad
 
 
 DATASET_CHECKPOINTS = {
@@ -194,6 +194,62 @@ def load_fov_1hw_from_bytes(fov_bytes: bytes, target_size: int) -> np.ndarray:
     m = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
     m = (m > 0).astype(np.float32)
     return np.expand_dims(m, axis=0).astype(np.float32)  # [1,H,W]
+
+
+def preprocess_image_retina_from_pil(
+    pil_im: Image.Image,
+    target_size: int = 512,
+    use_gamma: bool = True,
+    gamma: float = 0.9,
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
+) -> np.ndarray:
+    """
+    Pathless version of preprocess_image_retina:
+      - use PIL image directly
+      - green channel -> iso resize+pad -> CLAHE -> optional gamma
+      - returns (1, H, W) float32 in [0,1]
+    """
+    # 1) Green channel as uint8
+    g_u8 = np.array(pil_im.convert("RGB"), dtype=np.uint8)[..., 1]  # (H,W) uint8
+
+    # 2) Isotropic resize + pad (same function you already import)
+    g_u8 = _iso_resize_and_pad(g_u8, target=target_size, pad_value=0)
+
+    # 3) CLAHE in uint8
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
+    g_eq_u8 = clahe.apply(g_u8)
+
+    # 4) To float32 [0,1]
+    g = g_eq_u8.astype(np.float32) / 255.0
+
+    # 5) Optional gamma (np.power on [0,1]; gamma<1 brightens)
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        g = np.power(g, gamma, dtype=np.float32)
+
+    return np.expand_dims(g, axis=0).astype(np.float32)  # (1,H,W)
+
+
+def preprocess_mask_from_bytes(mask_bytes: bytes, target_size: int = 512) -> np.ndarray:
+    """
+    Pathless version of preprocess_mask:
+      - bytes -> imdecode -> grayscale -> iso resize+pad (nearest) -> Otsu -> {0,1} float32
+      - returns (1,H,W) float32 in {0,1}
+    """
+    buf = np.frombuffer(mask_bytes, dtype=np.uint8)
+    m = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+    if m is None:
+        raise ValueError("Could not decode mask bytes")
+
+    if m.dtype != np.uint8:
+        m = cv2.convertScaleAbs(m)
+    if m.ndim == 3:
+        m = cv2.cvtColor(m, cv2.COLOR_BGRA2GRAY) if m.shape[2] == 4 else cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+
+    m = _iso_resize_and_pad(m, target=target_size, pad_value=0)  # nearest for masks (2D)
+    m = cv2.threshold(m, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    m = (m > 0).astype(np.float32)
+    return np.expand_dims(m, axis=0).astype(np.float32)
 
 
 def render_telemetry_sidebar_footer():
@@ -692,30 +748,16 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
 
         # 1) Preprocess (grayscale + retina preprocessing)
         stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
-        IMAGE_SIZE = 512  # set to the exact size used in training
-        # Save uploaded fundus to a temporary BytesIO and call prep on a path-like object
         fundus_pil = pil_from_upload(img_file)
-        # Convert PIL to tmp path-like: write into memory & re-open via OpenCV-like pipeline if needed.
-        # Easiest: preprocess_image_retina also accepts np.ndarray; if not, save temp file to /tmp.
-        # Using ndarray path: convert to grayscale np with same shape
-        fundus_gray = np.array(fundus_pil.convert("L"))
-        # preprocess_image_retina expects a path; if the function supports ndarray, use it directly.
-        # If it needs a path, write a temp file:
-        tmp_dir = st.query_params.get("_tmp_dir", ".")  # returns a string now
-        tmp_path = Path(tmp_dir) / f"__tmp_{sel_stem}.png"
-
-        fundus_pil.save(tmp_path)
-
-        # library version that takes file path:
-        # --- Preprocess fundus (no FOV inside) ---
-        img_1hw = preprocess_image_retina(
-            str(tmp_path),
+        img_1hw = preprocess_image_retina_from_pil(
+            fundus_pil,
             target_size=IMAGE_SIZE,
             use_gamma=True,
             gamma=0.9,
             clahe_clip=2.0,
-            clahe_tiles=8
-        ).astype(np.float32)  # [1,H,W] in [0,1]
+            clahe_tiles=8,
+        ).astype(np.float32)  # (1,H,W) in [0,1]
+
 
         H, W = img_1hw.shape[-2], img_1hw.shape[-1]
 
@@ -764,9 +806,7 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
             gt_entry = st.session_state.get("gt_by_stem", {}).get(sel_stem)
             if gt_entry and gt_entry.get("bytes"):
                 # preprocess GT to same size
-                gt_tmp = PROJECT_ROOT / f"__tmp_gt_{sel_stem}.png"
-                Path(gt_tmp).write_bytes(gt_entry["bytes"])
-                gt_1hw = preprocess_mask(str(gt_tmp), target_size=IMAGE_SIZE).astype(np.float32)  # [1,H,W], 0/1
+                gt_1hw = preprocess_mask_from_bytes(gt_entry["bytes"], target_size=IMAGE_SIZE).astype(np.float32)
                 y = torch.from_numpy(gt_1hw).unsqueeze(0).to(dev)      # [1,1,H,W]
                 m = (fov > 0.5).float()                                # FOV mask
                 # quick scores (we can swap in this with package’s iou/dice/etc.)
