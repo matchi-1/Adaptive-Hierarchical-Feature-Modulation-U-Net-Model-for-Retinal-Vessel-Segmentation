@@ -166,12 +166,15 @@ def load_seg_model(device: str = "auto", dataset: Optional[str] = None, ckpt_key
     return (model, dev, meta)
 
 
-def load_fov_1hw_from_bytes(fov_bytes: bytes, target_hw: tuple[int, int]) -> np.ndarray:
-    """Return np.float32 array shaped [1,H,W] in {0,1} resized to target_hw."""
-    im = Image.open(io.BytesIO(fov_bytes)).convert("L")
-    im = im.resize((target_hw[1], target_hw[0]), Image.NEAREST)
-    arr = (np.array(im) > 0).astype(np.float32)
-    return arr[None, ...]  # [1,H,W]
+def load_fov_1hw_from_bytes(fov_bytes: bytes, target_size: int, stem: str = "fov") -> np.ndarray:
+    tmp = PROJECT_ROOT / f"__tmp_{stem}_fov.png"
+    Path(tmp).write_bytes(fov_bytes)
+    try:
+        fov_1hw = preprocess_mask(str(tmp), target_size=target_size).astype(np.float32)  # [1,H,W] in {0,1}
+    finally:
+        with contextlib.suppress(Exception):
+            tmp.unlink()
+    return fov_1hw  # shape [1,H,W], float32 {0,1}
 
 
 def render_telemetry_sidebar_footer():
@@ -697,13 +700,13 @@ if btn_run_viewer and has_selected_file and (not st.session_state.get("running",
 
         H, W = img_1hw.shape[-2], img_1hw.shape[-1]
 
-        # --- FOV (prefer uploaded, else fallback to "non-zero" heuristic) ---
         fov_entry = st.session_state["fov_by_stem"].get(sel_stem)
         if fov_entry and fov_entry.get("bytes"):
-            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], (H, W))
+            fov_1hw = load_fov_1hw_from_bytes(fov_entry["bytes"], IMAGE_SIZE, stem=sel_stem)  # iso-resize+pad + Otsu
         else:
-            # fallback: anything non-zero in preprocessed = inside FOV
-            fov_1hw = (img_1hw > 0).astype(np.float32)  # [1,H,W] in {0,1}
+            # fallback: use nonzero (pads stay 0) from preprocessed image
+            fov_1hw = (img_1hw > 0).astype(np.float32)
+
 
         # --- Gate the image by FOV BEFORE the model (as in dataset.py) ---
         img_fov_1hw = (img_1hw * fov_1hw).astype(np.float32)
