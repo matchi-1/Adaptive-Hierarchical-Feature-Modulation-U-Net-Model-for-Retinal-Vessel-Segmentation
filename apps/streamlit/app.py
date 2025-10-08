@@ -53,6 +53,35 @@ from apps.streamlit.lib.metrics_ui import (
 # used only to make overlay base the exact model geometry
 from src.data.preprocessing import _iso_resize_and_pad
 
+# --------------------- File Upload Helpers --------------------
+# --- Utility: make unique names like "img.png", "img (1).png", "img (2).png" ---
+def make_unique_name(name: str, already: set[str]) -> str:
+    p = Path(name)
+    base, ext = p.stem, p.suffix  # ext includes the dot
+    candidate = f"{base}{ext}"
+    idx = 1
+    while candidate in already:
+        candidate = f"{base} ({idx}){ext}"
+        idx += 1
+    return candidate
+
+# --- Proxy so we can override .name but keep file-like behavior for PIL/Streamlit ---
+class UploadedFileProxy:
+    def __init__(self, uf, new_name: str):
+        self._uf = uf
+        self.name = new_name
+        self.type = getattr(uf, "type", None)
+
+    # forward common file-like ops
+    def read(self, *a, **kw):  return self._uf.read(*a, **kw)
+    def seek(self, *a, **kw):  return self._uf.seek(*a, **kw)
+    def tell(self, *a, **kw):  return self._uf.tell(*a, **kw)
+    def getvalue(self, *a, **kw): return self._uf.getvalue(*a, **kw)
+
+    # forward anything else transparently
+    def __getattr__(self, name): 
+        return getattr(self._uf, name)
+
 
 # ---------------------- Page setup ----------------------
 st.set_page_config(page_title="Retinal Vessel Segmentation UI", layout="wide")
@@ -104,26 +133,48 @@ with card_upload_sec:
         key=f"u1_{st.session_state['uploader_nonce']}"
     )
 
-# Sync uploader → session library (respects deletions)
+
+# Sync uploader → session library (respects deletions & dedupes names)
 if up1 is not None:
-    old_map = {stem_of(f.name): f for f in st.session_state.get("files_img", [])}
-    new_items, new_stems = [], []
+    # current library (before sync)
+    old_items = st.session_state.get("files_img", [])
+    old_map = {stem_of(f.name): f for f in old_items}
+
+    new_items: list = []
+    new_stems: list = []
+
     skip_stems = st.session_state.get("deleted_stems", set())
 
-    for f in up1:
-        s = stem_of(f.name)
-        if s in skip_stems:
-            continue
-        new_items.append(f); new_stems.append(s)
+    # names that are already in the widget selection as we build it
+    # start with *nothing* because we want the widget list to be the source of truth
+    assigned_names: set[str] = set()
 
-    removed = set(old_map.keys()) - set(new_stems)
-    for s in removed:
+    for uf in up1:
+        # If user deleted a stem from Selection, ignore exact same stem reappearing
+        raw_stem = stem_of(uf.name)
+        if raw_stem in skip_stems:
+            continue
+
+        # Create a unique filename among the *current uploader list* we are building
+        unique_name = make_unique_name(uf.name, assigned_names)
+        assigned_names.add(unique_name)
+
+        # Keep track of stems for removal detection
+        new_stems.append(stem_of(unique_name))
+
+        # Store a proxy with overridden .name so the rest of the app uses the unique name
+        new_items.append(UploadedFileProxy(uf, unique_name))
+
+    # Anything that existed but is no longer in the uploader list is truly removed
+    removed_stems = set(old_map.keys()) - set(new_stems)
+    for s in removed_stems:
         st.session_state["fov_by_stem"].pop(s, None)
-        st.session_state["gt_by_stem"].pop(s, None) 
+        st.session_state["gt_by_stem"].pop(s, None)
         st.session_state["results"].pop(s, None)
         if st.session_state.get("selected_stem") == s:
             st.session_state["selected_stem"] = None
 
+    # Commit the exact list, and keep pagination/index valid
     st.session_state["files_img"] = new_items
     n = len(new_items)
     st.session_state["sel_idx"] = 0 if n == 0 else min(st.session_state.get("sel_idx", 0), n - 1)
