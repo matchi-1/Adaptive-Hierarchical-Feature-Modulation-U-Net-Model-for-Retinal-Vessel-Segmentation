@@ -42,7 +42,7 @@ from apps.streamlit.lib.preprocess import (
     load_fov_1hw_from_bytes,
     fov_bin_from_bytes,
 )
-from apps.streamlit.lib.model import load_seg_model
+from apps.streamlit.lib.model import load_mathfi_model
 from apps.streamlit.lib.ui import (
     try_zoomable, caption_with_size, render_telemetry_sidebar_footer,
     dataset_toggle_row, stage_runner,
@@ -447,7 +447,7 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
         ds = st.session_state.get("dataset_choice", "DRIVE")
         IMAGE_SIZE = IMAGE_SIZE_BY_DATASET.get(ds, 512)
 
-        model, dev, _ = load_seg_model(dataset=ds)
+        model, dev, _ = load_mathfi_model(dataset=ds)
 
         # 1) Preprocess
         stage_runner(stage, "Preprocessing…"); time.sleep(0.05)
