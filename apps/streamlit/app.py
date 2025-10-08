@@ -535,7 +535,7 @@ if (
         st.divider()
         st.markdown("### Ground Truth vs Prediction")
 
-        col_gt, col_pred, col_cmp = st.columns([1, 1, 1])
+        col_raw, col_gt, col_pred, col_cmp = st.columns([1, 1, 1, 1])
 
         # Ensure geometry matches model output
         ds = st.session_state.get("dataset_choice", "DRIVE")
@@ -552,6 +552,8 @@ if (
         pred = (prob_np >= thr).astype(np.uint8)                                        # (H,W) {0,1}
         pred_vis = (pred * 255).astype(np.uint8)
 
+        with col_raw:
+            st.image(pre_img, caption="Preprocessed Image", use_container_width=True, clamp=True)
         with col_gt:
             st.image(gt_vis, caption="Ground Truth", use_container_width=True)
 
@@ -567,25 +569,14 @@ if (
             diff_rgb = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
             diff_rgb[tp] = [255, 255, 255]          # white (correct vessels)
             diff_rgb[fn] = [255,   0,   0]          # (red missed GT)
-            diff_rgb[fp] = [0, 255, 85]          # light blue (over-segmented)
+            diff_rgb[fp] = [204, 255, 0]          # yellow (over-segmented)
 
             st.image(
                 diff_rgb,
-                caption="Comparison (white=TP, red=missed GT, green=over-segmented)",
+                caption="Comparison Result",
                 use_container_width=True
             )
 
-            # Tiny legend row
-            st.markdown(
-                """
-                <div style="display:flex; gap:12px; align-items:center; font-size:0.9rem;">
-                  <span style="display:inline-block;width:14px;height:14px;background:#ffffff;border:1px solid #888;"></span> True Positive
-                  <span style="display:inline-block;width:14px;height:14px;background:#ff0000;border:1px solid #888;"></span> Missed (FN)
-                  <span style="display:inline-block;width:14px;height:14px;background:#00ff55;border:1px solid #888;"></span> Over-segmented (FP)
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
 
         # --- 3) Metrics (GLOBAL, not FOV-masked) ---
         metrics_all = compute_metrics_single(
@@ -596,12 +587,24 @@ if (
             compute_auc=True,
         )
 
-        prediction_metrics_col = st.columns([1,1,1])
+        prediction_metrics_col = st.columns([1.5,0.2,1.5,0.75,1.25])
         with prediction_metrics_col[0]:
             render_metric_cards_main(metrics_all)
         
-        with prediction_metrics_col[1]:
+        with prediction_metrics_col[2]:
             render_metric_cards_others(metrics_all)
+
+        with prediction_metrics_col[4]:# Tiny legend row
+            st.markdown(
+                """
+                <div style="display:flex; gap:0.5rem; align-items:center; font-size:0.9rem;">
+                  <span style="display:inline-block;width:1.5rem;height:0.85rem;background:#ffffff;border:1px solid #888;"></span> Correct (True Postive)
+                  <span style="display:inline-block;width:1.5rem;height:0.85;background:#ff0000;border:1px solid #888;"></span> Missed (False Negative)
+                  <span style="display:inline-block;width:1.5rem;height:0.85;background:#ccff00;border:1px solid #888;"></span> Over-segmented (False Positive)
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
