@@ -124,7 +124,7 @@ def render_metric_cards_main(metrics: dict[str, float], model_name):
     Extra metrics (if present) go under an expander.
     """
 
-    st.markdown(f"#### Prediction Metric Scores ({model_name})")
+    st.markdown(f"#### Prediction Scores ({model_name})")
 
     # Primary rows (3 × 2)
     row1 = ["Sensitivity", "Specificity", "clDice"]
