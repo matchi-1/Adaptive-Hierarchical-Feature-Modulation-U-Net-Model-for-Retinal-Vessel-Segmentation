@@ -152,45 +152,40 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
 def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None):
     """
     Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing.
-    Pass `keys` to control which metrics are shown (max 6 shown, 2 rows × 3 cols).
+    Arrow/color are determined *after* rounding the delta to 3 decimals.
     """
     import math
     import streamlit as st
 
-    # default = "main" set
     if keys is None:
         keys = ["Sensitivity", "Specificity", "clDice",
                 "Accuracy", "IoU", "ROC_AUC"]
+    keys = [k for k in keys if k][:6]
 
-    # keep at most 6 to fit 2×3
-    keys = [k for k in keys if k]  # drop blanks
-    keys = keys[:6]
-
-    def _delta(k: str):
+    def _delta_rounded(k: str):
         try:
             m = float(metrics_m.get(k, float("nan")))
             u = float(metrics_u.get(k, float("nan")))
             dv = m - u
             if math.isnan(dv) or math.isinf(dv):
                 return None
-            return dv
+            return round(dv, 3)  # <-- round first; use this for both arrow & value
         except Exception:
             return None
 
-    def _cell(col, name: str, dv: float | None):
-        # label
+    def _cell(col, name: str, dv_r: float | None):
         label_html = f"<div style='font-family: var(--font, inherit); font-size:0.90rem; color:white;'>{name}</div>"
 
-        # value (+ arrow) — keep Streamlit default font
-        if dv is None:
+        if dv_r is None:
             val_html = "<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:#6b7280'>—</div>"
         else:
-            if dv > 0:
-                color, arrow, val = "#16a34a", "↑ ", abs(dv)   # green
-            elif dv < 0:
-                color, arrow, val = "#ef4444", "↓ ", abs(dv)   # red
+            # Decide arrow/color from the rounded value so 0.000 is neutral
+            if dv_r > 0:
+                color, arrow, val = "#16a34a", "↑ ", abs(dv_r)   # green
+            elif dv_r < 0:
+                color, arrow, val = "#ef4444", "↓ ", abs(dv_r)   # red
             else:
-                color, arrow, val = "#6b7280", "– ", 0.0       # gray
+                color, arrow, val = "#6b7280", "– ", 0.0         # gray
             val_html = (
                 f"<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:{color}'>"
                 f"{arrow}{val:.3f}"
@@ -199,16 +194,22 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
 
         col.markdown(label_html + val_html, unsafe_allow_html=True)
 
-    # First row
+    if title:
+        st.markdown(f"#### {title}")
+
+    # Row 1
     cols = st.columns(3)
     for col, k in zip(cols, keys[:3]):
-        _cell(col, k, _delta(k))
+        _cell(col, k, _delta_rounded(k))
+
     # gap between rows
     st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-    # Second row
+
+    # Row 2
     cols = st.columns(3)
     for col, k in zip(cols, keys[3:6]):
-        _cell(col, k, _delta(k))
+        _cell(col, k, _delta_rounded(k))
+
 
 
 def render_delta_cards_extended(metrics_m: dict, metrics_u: dict):
