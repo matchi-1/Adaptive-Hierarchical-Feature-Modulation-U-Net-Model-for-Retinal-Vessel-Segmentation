@@ -511,16 +511,16 @@ if (
             # Mutually exclusive difference map
             tp = (pred == 1) & (gt == 1)   # correct vessel
             fn = (pred == 0) & (gt == 1)   # missed vessel (GT only)
-            fp = (pred == 1) & (gt == 0)   # over-seg (pred only)
+            fp = (pred == 1) & (gt == 0)   # over-segmentated (pred only)
 
             diff_rgb = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
             diff_rgb[tp] = [255, 255, 255]          # white (correct vessels)
             diff_rgb[fn] = [255,   0,   0]          # (red missed GT)
-            diff_rgb[fp] = [0, 255, 85]          # light blue (over-seg)
+            diff_rgb[fp] = [0, 255, 85]          # light blue (over-segmented)
 
             st.image(
                 diff_rgb,
-                caption="Comparison (white=TP, red=missed GT, green=over-seg)",
+                caption="Comparison (white=TP, red=missed GT, green=over-segmented)",
                 use_container_width=True
             )
 
@@ -530,7 +530,7 @@ if (
                 <div style="display:flex; gap:12px; align-items:center; font-size:0.9rem;">
                   <span style="display:inline-block;width:14px;height:14px;background:#ffffff;border:1px solid #888;"></span> True Positive
                   <span style="display:inline-block;width:14px;height:14px;background:#ff0000;border:1px solid #888;"></span> Missed (FN)
-                  <span style="display:inline-block;width:14px;height:14px;background:#00ff55;border:1px solid #888;"></span> Over-seg (FP)
+                  <span style="display:inline-block;width:14px;height:14px;background:#00ff55;border:1px solid #888;"></span> Over-segmented (FP)
                 </div>
                 """,
                 unsafe_allow_html=True
