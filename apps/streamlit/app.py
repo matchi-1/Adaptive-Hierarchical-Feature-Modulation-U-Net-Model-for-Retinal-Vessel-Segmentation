@@ -104,6 +104,7 @@ top = st.sidebar.container()
 footer = st.sidebar.container()
 
 with top:
+    st.markdown("# MATHFI")
     st.selectbox("Top Mode", ["Single Model (MATFHI)", "Comparison (UNet vs MATFHI)"],
                  index=0, key="mode_top")
     st.radio("Run Mode", ["Predict Only", "With Ground Truth"], key="submode")
