@@ -155,10 +155,13 @@ class FundusSegDataset(Dataset):
         # Apply FOV AFTER augs so background is clamped to zero even after photometric ops
         img_t = img_t * fov_t
 
+
         # thresholds the mask/FOV to guarantee binary {0,1} values
         msk_t = (msk_t > 0.5).float()
         fov_t = (fov_t > 0.5).float()
 
+        img_full, msk_full, fov_full = img_t, msk_t, fov_t
+        
         if self.patch_mode:
             ps = self.patch_size
             pad = ps // 2
@@ -178,9 +181,9 @@ class FundusSegDataset(Dataset):
             x0, x1 = cx - pad, cx + pad
 
             # slice patch (C,H,W)
-            img_t = img_t[:, y0:y1, x0:x1]
-            msk_t = msk_t[:, y0:y1, x0:x1]
-            fov_t = fov_t[:, y0:y1, x0:x1]
+            img_t = img_full[:, y0:y1, x0:x1]
+            msk_t = msk_full[:, y0:y1, x0:x1]
+            fov_t = fov_full[:, y0:y1, x0:x1]
 
             # optional: if we intended a vessel patch but it's empty, resample once uniformly
             if use_vessel and (msk_t > 0.5).sum().item() < self.min_vessel_px:
