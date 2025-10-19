@@ -12,6 +12,11 @@ from src.training.metrics import (
     cldice, thin_thick, roc_auc, pr_auc
 )
 
+# --- formatting knobs ---
+DEC_PLACES_RAW = 4          # if we ever want raw decimals
+DEC_PLACES_PCT = 2          # decimals when showing %
+SHOW_AS_PERCENT = True      # flip to False if we want raw again
+
 def _linear_resize(img: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
     """Resize float image to (H,W) with bilinear."""
     H, W = hw
@@ -103,17 +108,30 @@ def compute_metrics_single(
 
     return out
 
-DEC_PLACES = 4
+# --- formatting knobs ---
+DEC_PLACES_PCT = 2
+SHOW_AS_PERCENT = True
+TRIM_TRAILING_ZEROS = True
 
-def _fmt(v, decimals: int = DEC_PLACES):
+def _fmt(v, *, decimals=DEC_PLACES_PCT, as_pct=SHOW_AS_PERCENT):
     import math
     try:
-        if v is None: return "—"
+        if v is None:
+            return "—"
         v = float(v)
-        if math.isnan(v) or math.isinf(v): return "—"
-        return f"{v:.{decimals}f}"
+        if math.isnan(v) or math.isinf(v):
+            return "—"
+        if as_pct:
+            v *= 100.0
+            s = f"{v:.{decimals}f}"
+            if TRIM_TRAILING_ZEROS:
+                s = s.rstrip("0").rstrip(".")   # "97.20" -> "97.2", "97.00" -> "97"
+            return s + "%"
+        else:
+            return f"{v:.4f}"
     except Exception:
         return "—"
+
 
 def render_metric_cards_main(metrics: dict[str, float], model_name):
     """
@@ -152,33 +170,28 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
                 cols[i % 3].metric(k, _fmt(metrics.get(k)))
 
 
-def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None, decimals: int = DEC_PLACES):
-    """
-    Δ (MATHFI − UNet) as a 2×3 grid with colored number + arrow and proper row spacing.
-    Arrow/color are determined *after* rounding the delta to `decimals` places.
-    """
-    import math
-    import streamlit as st
-
+def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None,
+                            decimals: int = DEC_PLACES_PCT, as_pct: bool = True):
+    import math, streamlit as st
     if keys is None:
-        keys = ["Sensitivity", "Specificity", "clDice",
-                "Accuracy", "IoU", "ROC_AUC"]
+        keys = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
     keys = [k for k in keys if k][:6]
+
+    scale = 100.0 if as_pct else 1.0
 
     def _delta_rounded(k: str):
         try:
             m = float(metrics_m.get(k, float("nan")))
             u = float(metrics_u.get(k, float("nan")))
-            dv = m - u
+            dv = (m - u) * scale
             if math.isnan(dv) or math.isinf(dv):
                 return None
-            return round(dv, decimals)  # <<< was 3
+            return round(dv, decimals)   # arrow/color use this rounded value
         except Exception:
             return None
 
     def _cell(col, name: str, dv_r: float | None):
         label_html = f"<div style='font-family: var(--font, inherit); font-size:0.90rem; color:white;'>{name}</div>"
-
         if dv_r is None:
             val_html = "<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:#6b7280'>—</div>"
         else:
@@ -188,12 +201,12 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
                 color, arrow, val = "#ef4444", "↓ ", abs(dv_r)
             else:
                 color, arrow, val = "#6b7280", "– ", 0.0
+            unit = "%" if as_pct else ""
             val_html = (
                 f"<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:{color}'>"
-                f"{arrow}{val:.{decimals}f}"   # <<< was .3f
+                f"{arrow}{val:.{decimals}f}{unit}"
                 f"</div>"
             )
-
         col.markdown(label_html + val_html, unsafe_allow_html=True)
 
     if title:
@@ -202,13 +215,10 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
     cols = st.columns(3)
     for col, k in zip(cols, keys[:3]):
         _cell(col, k, _delta_rounded(k))
-
     st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-
     cols = st.columns(3)
     for col, k in zip(cols, keys[3:6]):
         _cell(col, k, _delta_rounded(k))
-
 
 
 
