@@ -10,10 +10,10 @@ DATASET_CHECKPOINTS = {
 
 # Unet checkpoints
 UNET_CHECKPOINTS = {
-    "DRIVE":     Path("outputs/checkpoints/unet/[DRIVE_UNET] base_unet.pth"), 
-    "CHASE-DB1": Path("outputs/checkpoints/unet/[CHASEDB1_UNET] base_unet.pth"),
-    "STARE":     Path("outputs/checkpoints/unet/[STARE_UNET] base_unet.pth"),
-    "ALL":       Path("outputs/checkpoints/unet/[ALL_UNET] base_unet.pth"),
+    "DRIVE":     Path("outputs/checkpoints/unet/[DRIVE] base_unet.pth"), 
+    "CHASE-DB1": Path("outputs/checkpoints/unet/[CHASEDB1] base_unet.pth"),
+    "STARE":     Path("outputs/checkpoints/unet/[STARE] base_unet.pth"),
+    "ALL":       Path("outputs/checkpoints/unet/[ALL] base_unet.pth"),
 }
 
 IMAGE_SIZE_BY_DATASET = {k: 512 for k in DATASET_CHECKPOINTS.keys()}
