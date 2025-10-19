@@ -79,7 +79,7 @@ def make_diff_rgb(pred01_u8: np.ndarray, gt01_u8: np.ndarray) -> np.ndarray:
     Returns RGB where:
       white = TP (correct vessel)
       red   = FN (missed GT)
-      yellow = FP (over-seg)
+      blue = FP (over-seg)
     """
     pred = (pred01_u8.astype(np.uint8) > 0).astype(np.uint8)
     gt   = (gt01_u8.astype(np.uint8) > 0).astype(np.uint8)
@@ -91,7 +91,7 @@ def make_diff_rgb(pred01_u8: np.ndarray, gt01_u8: np.ndarray) -> np.ndarray:
     out = np.zeros((gt.shape[0], gt.shape[1], 3), dtype=np.uint8)
     out[tp] = [255, 255, 255]       # white
     out[fn] = [255,   0,   0]       # red
-    out[fp] = [166, 255, 0]       # yellow
+    out[fp] = [0, 47, 255]       # blue
     return out
 
 
@@ -709,7 +709,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
                 <div style="display:flex; gap:.6rem; align-items:center; font-size:0.9rem; justify-content:flex-end;">
                   <span style="display:inline-block;width:14px;height:14px;background:#ffffff;border:1px solid #888;"></span> True Positive
                   <span style="display:inline-block;width:14px;height:14px;background:#ff0000;border:1px solid #888;"></span> Missed (FN)
-                  <span style="display:inline-block;width:14px;height:14px;background:#a6ff00;border:1px solid #888;"></span> Over-segmented (FP)
+                  <span style="display:inline-block;width:14px;height:14px;background:#002fff;border:1px solid #888;"></span> Over-segmented (FP)
                 </div>
                 """,
                 unsafe_allow_html=True
