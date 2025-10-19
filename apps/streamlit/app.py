@@ -769,19 +769,20 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
             metrics_u = compute_metrics_single(pred_probs=prob_u, gt_1hw=gt_1hw, fov_1hw=None, threshold=thr, compute_auc=True)
 
             st.markdown("## Metrics: MATHFI vs UNet")
+            
             row = st.columns([1.5, 0.25, 1.5, 0.25, 1.75])
             with row[0]:
                 render_metric_cards_main(metrics_m, "MATHFI")
             with row[2]:
                 render_metric_cards_main(metrics_u, "U-Net")
             with row[4]:
-                # Delta panel (MATHFI - UNet)
-                st.markdown("#### Δ (MATHFI − UNet)")
-                render_delta_cards_grid(metrics_m, metrics_u)
+                # put the title INSIDE the delta renderer and pad the top a bit
+                render_delta_cards_grid(metrics_m, metrics_u, title="Δ (MATHFI − UNet)", row_gap="1.75rem")
+
 
 
             # extended metrics comparison
-            st.markdown("#####")
+            st.markdown("###")
             row2 = st.columns([1.5, 0.25, 1.5, 0.25, 1.75])
 
             with row2[0]:
@@ -791,8 +792,7 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
                 render_metric_cards_others(metrics_u, "U-Net")
 
             with row2[4]:
-                st.markdown("#### Δ (MATHFI − UNet) — Extended")
-                render_delta_cards_extended(metrics_m, metrics_u)
+                render_delta_cards_extended(metrics_m, metrics_u, title="Δ (MATHFI − UNet) — Extended", row_gap="1.75rem")
 
 
     else:

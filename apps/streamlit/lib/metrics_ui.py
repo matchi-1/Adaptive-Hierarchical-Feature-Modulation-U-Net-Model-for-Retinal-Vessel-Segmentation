@@ -203,11 +203,19 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
             if k in metrics:
                 cols[i % 3].metric(k, _fmt(metrics.get(k)))
 
-
-def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None,
-                            decimals: int = DEC_PLACES_PCT, as_pct: bool = True):
+def render_delta_cards_grid(
+    metrics_m: dict,
+    metrics_u: dict,
+    *,
+    keys=None,
+    title: str | None = None,
+    decimals: int = DEC_PLACES_PCT,
+    as_pct: bool = True,
+    row_gap: float | int | str = "0.75rem",   # <— adjustable gap between row 1 and 2
+):
     apply_compact_metric_css()
     import math, streamlit as st
+
     if keys is None:
         keys = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
     keys = [k for k in keys if k][:6]
@@ -221,14 +229,21 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
             dv = (m - u) * scale
             if math.isnan(dv) or math.isinf(dv):
                 return None
-            return round(dv, decimals)   # arrow/color use this rounded value
+            return round(dv, decimals)
         except Exception:
             return None
 
+    if title:
+        st.markdown(f"<h4 style='margin:0'>{title}</h4>", unsafe_allow_html=True)
+
     def _cell(col, name: str, dv_r: float | None):
-        label_html = f"<div style='font-family: var(--font, inherit); font-size:0.90rem; color:white;'>{name}</div>"
+        label_html = (
+            f"<div style='font-size:0.90rem;color:white;margin-bottom:0.1rem'>{name}</div>"
+        )
         if dv_r is None:
-            val_html = "<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:#6b7280'>—</div>"
+            val_html = (
+                "<div style='font-size:2rem;font-weight:600;line-height:1.1;color:#6b7280'>—</div>"
+            )
         else:
             if dv_r > 0:
                 color, arrow, val = "#16a34a", "↑ ", abs(dv_r)
@@ -238,28 +253,29 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
                 color, arrow, val = "#6b7280", "– ", 0.0
             unit = "%" if as_pct else ""
             val_html = (
-                f"<div style='font-family: var(--font, inherit); font-size:2rem; font-weight:600; color:{color}'>"
+                f"<div style='font-size:2rem;font-weight:600;line-height:1.1;color:{color}'>"
                 f"{arrow}{val:.{decimals}f}{unit}"
                 f"</div>"
             )
         col.markdown(label_html + val_html, unsafe_allow_html=True)
 
-    if title:
-        st.markdown(f"#### {title}")
-
+    # Row 1
     cols = st.columns(3)
     for col, k in zip(cols, keys[:3]):
         _cell(col, k, _delta_rounded(k))
-    st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+
+    # Adjustable gap between rows
+    gap_css = f"{row_gap}px" if isinstance(row_gap, (int, float)) else str(row_gap)
+    st.markdown(f"<div style='height:{gap_css}'></div>", unsafe_allow_html=True)
+
+    # Row 2
     cols = st.columns(3)
     for col, k in zip(cols, keys[3:6]):
         _cell(col, k, _delta_rounded(k))
 
 
 
-def render_delta_cards_extended(metrics_m: dict, metrics_u: dict):
-    # Preferred extended order (we’ll show the first 6 that are available)
-    apply_compact_metric_css()
+def render_delta_cards_extended(metrics_m: dict, metrics_u: dict, title: str | None = None, row_gap: str | None = None):
     EXTENDED_ORDER = ["Precision", "Dice", "FPR", "FDR", "Dice_thin", "Dice_thick"]
     keys = [k for k in EXTENDED_ORDER if (k in metrics_m or k in metrics_u)][:6]
-    render_delta_cards_grid(metrics_m, metrics_u, keys=keys)
+    render_delta_cards_grid(metrics_m, metrics_u, keys=keys, title=title, row_gap=row_gap)
