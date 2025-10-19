@@ -132,6 +132,39 @@ def _fmt(v, *, decimals=DEC_PLACES_PCT, as_pct=SHOW_AS_PERCENT):
     except Exception:
         return "—"
 
+def apply_compact_metric_css(
+    value_size="2rem", label_size="1rem", delta_size="0.9rem"
+):
+    # Inject on every rerun (cheap + reliable)
+    st.markdown(f"""
+    <style>
+      /* Target all parts of st.metric robustly (div OR span) */
+      [data-testid="stMetric"] [data-testid="stMetricValue"] {{
+        font-size: {value_size} !important;
+        line-height: 1.1 !important;
+        overflow: visible !important;         /* avoid ellipsis */
+        text-overflow: clip !important;
+        white-space: nowrap !important;
+      }}
+      [data-testid="stMetric"] [data-testid="stMetricValue"] > div,
+      [data-testid="stMetric"] [data-testid="stMetricValue"] > span {{
+        font-size: inherit !important;        /* inner node inherits */
+      }}
+
+      [data-testid="stMetric"] [data-testid="stMetricLabel"] > div,
+      [data-testid="stMetric"] [data-testid="stMetricLabel"] > span {{
+        font-size: {label_size} !important;
+        line-height: 1.1 !important;
+      }}
+
+      [data-testid="stMetric"] [data-testid="stMetricDelta"] > div,
+      [data-testid="stMetric"] [data-testid="stMetricDelta"] > span {{
+        font-size: {delta_size} !important;
+        line-height: 1.1 !important;
+      }}
+    </style>
+    """, unsafe_allow_html=True)
+
 
 def render_metric_cards_main(metrics: dict[str, float], model_name):
     """
@@ -141,7 +174,7 @@ def render_metric_cards_main(metrics: dict[str, float], model_name):
       Row 2: Accuracy, IoU, ROC_AUC
     Extra metrics (if present) go under an expander.
     """
-
+    apply_compact_metric_css()
     st.markdown(f"#### Prediction Scores ({model_name})")
 
     # Primary rows (3 × 2)
@@ -157,6 +190,7 @@ def render_metric_cards_main(metrics: dict[str, float], model_name):
         col.metric(k, _fmt(metrics.get(k)))
 
 def render_metric_cards_others(metrics: dict[str, float], model_name):
+    apply_compact_metric_css()
     rest_keys = [
         "Precision", "Dice", 
         "FPR", "FDR", "Dice_thin", "Dice_thick", #"PR_AUC",
@@ -172,6 +206,7 @@ def render_metric_cards_others(metrics: dict[str, float], model_name):
 
 def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, title: str | None=None,
                             decimals: int = DEC_PLACES_PCT, as_pct: bool = True):
+    apply_compact_metric_css()
     import math, streamlit as st
     if keys is None:
         keys = ["Sensitivity","Specificity","clDice","Accuracy","IoU","ROC_AUC"]
@@ -224,6 +259,7 @@ def render_delta_cards_grid(metrics_m: dict, metrics_u: dict, *, keys=None, titl
 
 def render_delta_cards_extended(metrics_m: dict, metrics_u: dict):
     # Preferred extended order (we’ll show the first 6 that are available)
+    apply_compact_metric_css()
     EXTENDED_ORDER = ["Precision", "Dice", "FPR", "FDR", "Dice_thin", "Dice_thick"]
     keys = [k for k in EXTENDED_ORDER if (k in metrics_m or k in metrics_u)][:6]
     render_delta_cards_grid(metrics_m, metrics_u, keys=keys)
