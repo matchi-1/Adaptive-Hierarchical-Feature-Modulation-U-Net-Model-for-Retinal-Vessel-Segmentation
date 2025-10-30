@@ -1,10 +1,11 @@
+from __future__ import annotations
 import random
 import re
 from collections import defaultdict
 from pathlib import Path
 from src.data.prepare_dataset import build_pairs_all, _natural_key
 from typing import List, Tuple
-from __future__ import annotations
+
 
 # -------------- DRIVE: 20/20 --------------
 def split_drive_20_20(
