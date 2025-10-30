@@ -3,6 +3,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 from src.data.prepare_dataset import build_pairs_all, _natural_key
+from typing import List, Tuple
+from __future__ import annotations
 
 # -------------- DRIVE: 20/20 --------------
 def split_drive_20_20(
@@ -28,6 +30,98 @@ def split_drive_20_20(
 
 
 # -------------- CHASE_DB1: subject-wise 20/8 --------------
+# ---------- CHASE-DB1 helpers ----------
+
+def _extract_first_number(stem: str) -> int | None:
+    """
+    From a filename stem like '01_test', '15_training', return the leading integer (e.g., 1, 15).
+    Returns None if no digits are found.
+    """
+    m = re.search(r"(\d+)", stem)
+    return int(m.group(1)) if m else None
+
+def _chase_subject_id_from_number(n: int) -> str:
+    """
+    CHASE-DB1 convention in your folders:
+      (01,02)->01, (03,04)->02, ..., (27,28)->14
+    i.e., subject_id = (n+1)//2, zero-padded to 2 digits.
+    """
+    sid = (n + 1) // 2
+    return f"{sid:02d}"
+
+def _parse_chase_subject_id(img_path: str) -> str:
+    """
+    Map an image filename to a subject id using your numbering scheme.
+    Works with stems like '01_test', '02_test', '15_training', '16_training', etc.
+    """
+    stem = Path(img_path).stem.lower()
+    n = _extract_first_number(stem)
+    if n is None:
+        # Fallback: use full stem (unlikely with your dataset)
+        return stem
+    return _chase_subject_id_from_number(n)
+
+def split_chase_subjectwise_20_8(
+    dataset_root: str,
+    label_folder: str = "1st_manual",
+    seed: int = 1337,
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """
+    Merge 'training' and 'test' into one pool, group by subject (consecutive pairs),
+    then pick 4 subjects (8 images) for TEST, leaving 10 subjects (20 images) for TRAIN.
+    Deterministic with `seed`.
+    """
+    # 1) Collect all (img, lab) pairs from both splits
+    all_pairs = build_pairs_all(dataset_root, label_folder=label_folder)
+    if len(all_pairs) != 28:
+        raise ValueError(f"[CHASE_DB1] Expected 28 images total (found {len(all_pairs)}). "
+                         f"Check dataset layout or label folder name '{label_folder}'.")
+
+    # 2) Group by subject id
+    by_subject: dict[str, list[Tuple[str, str]]] = defaultdict(list)
+    for (img, lab) in all_pairs:
+        sid = _parse_chase_subject_id(img)
+        by_subject[sid].append((img, lab))
+
+    subjects = sorted(by_subject.keys())
+    if len(subjects) != 14:
+        # Not fatal, but surface it clearly
+        raise RuntimeError(f"[CHASE_DB1] Subject grouping mismatch: expected 14 subjects, found {len(subjects)}. "
+                           f"Example groups: " +
+                           ", ".join(f"{s}:{len(by_subject[s])}" for s in subjects[:6]))
+
+    # Optional sanity: each subject should have exactly 2 images
+    bad = [s for s in subjects if len(by_subject[s]) != 2]
+    if bad:
+        raise RuntimeError(f"[CHASE_DB1] Some subjects do not have exactly 2 images: "
+                           f"{ {s: len(by_subject[s]) for s in bad} }")
+
+    # 3) Deterministically choose 4 subjects for TEST
+    rng = random.Random(seed)
+    subs = subjects[:]      # copy
+    subs.sort()             # stable base order
+    rng.shuffle(subs)       # seeded shuffle
+    test_subjects  = sorted(subs[:4])   # 4 subjects -> 8 images
+    train_subjects = sorted(subs[4:])   # 10 subjects -> 20 images
+
+    # 4) Flatten, keep natural order within each subject
+    def _flatten(subject_list: List[str]) -> List[Tuple[str, str]]:
+        out: List[Tuple[str, str]] = []
+        for sid in subject_list:
+            # sort each subject's two images naturally (e.g., 15 before 16)
+            out.extend(sorted(by_subject[sid], key=lambda t: _natural_key(Path(t[0]))))
+        return out
+
+    train_pairs = _flatten(train_subjects)
+    test_pairs  = _flatten(test_subjects)
+
+    # 5) Final sanity
+    if len(train_pairs) != 20 or len(test_pairs) != 8:
+        raise RuntimeError(f"[CHASE_DB1] Split mismatch: train={len(train_pairs)}, test={len(test_pairs)}. "
+                           f"train_subjects={train_subjects}, test_subjects={test_subjects}")
+
+    return train_pairs, test_pairs
+
 def _parse_chase_subject_id(img_path: str) -> str:
     """
     Parse CHASE_DB1 subject id from filename.
