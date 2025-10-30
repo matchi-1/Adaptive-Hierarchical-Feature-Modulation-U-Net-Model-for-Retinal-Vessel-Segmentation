@@ -73,46 +73,6 @@ class FundusSegDataset(Dataset):
         return base * self.virtual_mult if self.patch_mode else base
 
     # ----- internal helpers -----
-    def _sample_center_dense(self, msk_t, fov_t, pad, ksize: int = None, topk_frac: float = 0.10):
-        """
-        Pick a center from high vessel-density pixels, constrained to FOV and valid crop margins.
-        msk_t, fov_t: [1,H,W] float {0,1}
-        ksize: window to measure density (defaults to ~patch_size/4, must be odd)
-        topk_frac: sample from the top fraction of dense pixels to keep variety
-        """
-        _, H, W = msk_t.shape
-        ps = self.patch_size
-        if ksize is None:
-            ksize = max(3, (ps // 4) | 1)  # odd kernel ~ ps/4
-
-        # local mean vessel density with SAME padding
-        dens = F.avg_pool2d(msk_t, kernel_size=ksize, stride=1, padding=ksize//2)  # [1,H,W]
-
-        # mask out invalid centers: enforce FOV & crop margins
-        valid = (fov_t > 0.5).float()
-        margin = torch.zeros_like(valid)
-        margin[:, pad:H-pad, pad:W-pad] = 1.0
-        valid = valid * margin
-
-        dens = dens * valid  # zero out invalid
-
-        flat = dens.view(-1)
-        nz = (flat > 0).nonzero(as_tuple=False).squeeze(-1)
-        if nz.numel() == 0:
-            return self._sample_center_uniform(fov_t, pad)  # fallback
-
-        # choose from top-k% densest pixels
-        k = max(1, int(topk_frac * nz.numel()))
-        topk_vals, topk_idx = torch.topk(flat[nz], k, largest=True)
-        # multinomial over the top-k for variety
-        probs = (topk_vals / (topk_vals.sum() + 1e-8)).clamp_min(1e-8)
-        pick = torch.multinomial(probs, 1).item()
-        lin = nz[topk_idx[pick]].item()
-
-        cy, cx = divmod(lin, W)
-        return int(cy), int(cx)
-
-
     def _sample_center_uniform(self, fov_t, pad):
         H, W = fov_t.shape[-2:]
         # try up to N times to land inside FOV

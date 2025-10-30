@@ -115,8 +115,11 @@ def make_loaders(
         gamma = gamma,
         clahe_clip = clahe_clip,
         clahe_tiles = clahe_tiles,
-        patch_mode=patch_train, patch_size=patch_size,
-        vessel_bias_p=vessel_bias_p, min_percent_vessel=min_percent_vessel, virtual_mult=virtual_mult
+        patch_mode=patch_train, 
+        patch_size=patch_size,
+        vessel_bias_p=vessel_bias_p, 
+        min_percent_vessel=min_percent_vessel, 
+        virtual_mult=virtual_mult
     )
     val = FundusSegDataset(
         val_pairs,
