@@ -222,3 +222,24 @@ def assert_dataset_layout(dataset_root: str, split: Split = "training", label_fo
             raise FileNotFoundError(f"[prepare_dataset] Missing directory: {d}")
         if not any(d.iterdir()):
             raise RuntimeError(f"[prepare_dataset] Directory is empty: {d}")
+
+
+# --- NEW: gather pairs from BOTH splits into one pool ---
+def build_pairs_all(
+    dataset_root: str,
+    label_folder: str = "1st_manual",
+) -> List[Tuple[str, str]]:
+    """
+    Return (img, lab) pairs from BOTH 'training' and 'test' subfolders, concatenated.
+    Natural-sorted per subfolder, then concatenated in order: training + test.
+    """
+    pairs = []
+    for sp in ("training", "test"):
+        try:
+            pairs.extend(build_pairs_for_split(dataset_root, split=sp, label_folder=label_folder))
+        except FileNotFoundError:
+            # some datasets might not have both; skip silently
+            continue
+    if len(pairs) == 0:
+        raise RuntimeError(f"[build_pairs_all] No pairs found under {dataset_root} (training+test).")
+    return pairs
