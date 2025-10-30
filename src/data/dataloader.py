@@ -72,6 +72,7 @@ def make_loaders(
     patch_train: bool = False,
     patch_size: int = 512,
     vessel_bias_p: float = 0.6,
+    dense_bias_p: float = None,
     min_percent_vessel: float = 0.1,
     virtual_mult: int = 100,
 ):
@@ -118,6 +119,7 @@ def make_loaders(
         patch_mode=patch_train, 
         patch_size=patch_size,
         vessel_bias_p=vessel_bias_p, 
+        dense_bias_p= dense_bias_p,
         min_percent_vessel=min_percent_vessel, 
         virtual_mult=virtual_mult
     )

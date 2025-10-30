@@ -43,6 +43,7 @@ class FundusSegDataset(Dataset):
         patch_mode: bool = False,
         patch_size: int = 512,
         vessel_bias_p: float = 0.6,   # chance to center crop on vessel pixels
+        dense_bias_p: float = None,
         min_percent_vessel: float = 0.01,  # min vessel pixels as percent of patch area; if not met, resample uniformly
         virtual_mult: int = 100
         ):
@@ -55,6 +56,7 @@ class FundusSegDataset(Dataset):
         self.patch_mode = patch_mode
         self.patch_size = patch_size
         self.vessel_bias_p = vessel_bias_p
+        self.dense_bias_p = dense_bias_p
         self.min_percent_vessel = min_percent_vessel
         self.virtual_mult = virtual_mult
 
@@ -169,13 +171,25 @@ class FundusSegDataset(Dataset):
             pad = ps // 2
             H, W = img_t.shape[-2:]
 
-            # choose a center (vessel-biased with probability p)
-            use_vessel = (torch.rand(1).item() < self.vessel_bias_p)
-            c = self._sample_center_vessel(msk_t) if use_vessel else None
-            if c is None:
-                cy, cx = self._sample_center_uniform(fov_t, pad)
+            r = torch.rand(1).item()
+            p_dense  = self.dense_bias_p if self.dense_bias_p is not None else 0.0
+            p_vessel = self.vessel_bias_p
+            p_uniform = max(0.0, 1.0 - p_dense - p_vessel)
+
+            intended_vessel = False
+
+            if r < p_dense:  # only active if dense_bias_p was not None
+                cy, cx = self._sample_center_dense(msk_t, fov_t, pad)
+                intended_vessel = True
+            elif r < p_dense + p_vessel:
+                c = self._sample_center_vessel(msk_t)
+                if c is None:
+                    cy, cx = self._sample_center_uniform(fov_t, pad)
+                else:
+                    cy, cx = c
+                    intended_vessel = True
             else:
-                cy, cx = c
+                cy, cx = self._sample_center_uniform(fov_t, pad)
 
             cy = max(pad, min(H - pad, cy))
             cx = max(pad, min(W - pad, cx))
