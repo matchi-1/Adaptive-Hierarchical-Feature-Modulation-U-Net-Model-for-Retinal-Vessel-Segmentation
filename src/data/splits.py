@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict
 from pathlib import Path
+from src.data.prepare_dataset import build_pairs_all, _natural_key
 
 # -------------- DRIVE: 20/20 --------------
 def split_drive_20_20(
