@@ -1,12 +1,14 @@
-# src/models/wrappers/dpcn_concat_unet.py
+# src/models/wrappers/dpcn_concat_unet_v1.py
 import torch
 import torch.nn as nn
 
 from src.models.dpcn.dpcn_v2 import DPCN
 
-from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import (
+from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved4 import (
     UNetWithMSU_HASSkip_CBAM_ASFG
 )
+
+from src.models.blocks.cbam import CBAM
 
 class DPCNConcatUNet(nn.Module):        # version 1
     """
@@ -36,7 +38,8 @@ class DPCNConcatUNet(nn.Module):        # version 1
                  threshold_mode: str = "scaled_vat",
                  half_life: float = 2.0,
                  reduce_to: int | None = None,
-                 base_kwargs: dict | None = None):
+                 base_kwargs: dict | None = None,
+                 apply_pre_cbam: bool = True):
         super().__init__()
         self.iters = int(iters)
         self.enh_channels = int(enh_channels)
@@ -58,6 +61,11 @@ class DPCNConcatUNet(nn.Module):        # version 1
             self.stem = nn.Conv2d(in_ch_base, reduce_to, kernel_size=1, bias=True)
             in_ch_base = reduce_to
 
+        # 2.5) CBAM over the final DPCN-VAT output (channel→spatial)
+        self.apply_pre_cbam = apply_pre_cbam
+        cbam_red = (base_kwargs or {}).get("cbam_reduction", 16)
+        self.pre_cbam = CBAM(in_ch_base, reduction_ratio=cbam_red, use_spatial=True)
+        
         # 3) base model takes in_channels=in_ch_base; rest unchanged
         base_kwargs = base_kwargs or {}
         self.base = UNetWithMSU_HASSkip_CBAM_ASFG(in_channels=in_ch_base, **base_kwargs)
@@ -72,6 +80,10 @@ class DPCNConcatUNet(nn.Module):        # version 1
 
         # optional 1x1 compress
         x_cat = self.stem(x_cat)
+
+        # CBAM on the final DPCN-VAT output (before encoder)
+        if self.apply_pre_cbam:
+            x_cat = self.pre_cbam(x_cat)
 
         # pass to existing UNet/MSU/HAS/CBAM
         return self.base(x_cat)
