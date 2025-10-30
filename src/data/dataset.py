@@ -167,19 +167,27 @@ class FundusSegDataset(Dataset):
         img_full, msk_full, fov_full = img_t, msk_t, fov_t
         
         if self.patch_mode:
-            ps = self.patch_size
+            ps  = self.patch_size
             pad = ps // 2
             H, W = img_t.shape[-2:]
 
-            r = torch.rand(1).item()
+            # ---- mixture probs (dense is optional via None) ----
             p_dense  = self.dense_bias_p if self.dense_bias_p is not None else 0.0
-            p_vessel = self.vessel_bias_p
-            p_uniform = max(0.0, 1.0 - p_dense - p_vessel)
+            p_vessel = float(self.vessel_bias_p)
+            # keep them sane
+            p_dense  = max(0.0, min(1.0, p_dense))
+            p_vessel = max(0.0, min(1.0 - p_dense, p_vessel))
+            p_uniform = 1.0 - (p_dense + p_vessel)
 
+            r = torch.rand(1).item()
             intended_vessel = False
 
-            if r < p_dense:  # only active if dense_bias_p was not None
-                cy, cx = self._sample_center_dense(msk_t, fov_t, pad)
+            if r < p_dense:
+                # requires you added _sample_center_dense; otherwise fallback to uniform
+                if hasattr(self, "_sample_center_dense"):
+                    cy, cx = self._sample_center_dense(msk_t, fov_t, pad)
+                else:
+                    cy, cx = self._sample_center_uniform(fov_t, pad)
                 intended_vessel = True
             elif r < p_dense + p_vessel:
                 c = self._sample_center_vessel(msk_t)
@@ -191,22 +199,24 @@ class FundusSegDataset(Dataset):
             else:
                 cy, cx = self._sample_center_uniform(fov_t, pad)
 
+            # ---- clamp & crop ----
             cy = max(pad, min(H - pad, cy))
             cx = max(pad, min(W - pad, cx))
             y0, y1 = cy - pad, cy + pad
             x0, x1 = cx - pad, cx + pad
 
-            # slice patch (C,H,W)
             img_t = img_full[:, y0:y1, x0:x1]
             msk_t = msk_full[:, y0:y1, x0:x1]
             fov_t = fov_full[:, y0:y1, x0:x1]
 
-            # optional: if we intended a vessel patch but it's empty, resample once uniformly
-            if use_vessel and (msk_t > 0.5).sum().item() < self.min_percent_vessel * ps * ps:
+            # ---- one-time fallback if intended vessel patch is too empty ----
+            if intended_vessel and (msk_t > 0.5).sum().item() < (self.min_percent_vessel * (ps * ps)):
                 cy, cx = self._sample_center_uniform(fov_t, pad)
                 cy = max(pad, min(H - pad, cy)); cx = max(pad, min(W - pad, cx))
                 y0, y1 = cy - pad, cy + pad; x0, x1 = cx - pad, cx + pad
-                img_t = img_full[:, y0:y1, x0:x1] if 'img_full' in locals() else img_t
+                img_t = img_full[:, y0:y1, x0:x1]
+                msk_t = msk_full[:, y0:y1, x0:x1]
+                fov_t = fov_full[:, y0:y1, x0:x1]
 
         return {  # returns a structured dict for one training sample
             "image": img_t,   # preprocessed retina (float tensor [1,H,W])
