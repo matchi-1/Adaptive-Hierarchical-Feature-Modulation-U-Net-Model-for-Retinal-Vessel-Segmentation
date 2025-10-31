@@ -23,6 +23,11 @@ class AlignMSU(nn.Module):
         if B_.shape[-2:] != A_.shape[-2:]:
             B_ = F.interpolate(B_, size=A_.shape[-2:], mode='bilinear', align_corners=False)
         return self.msu(A_, B_)
+    
+def _resize_like(x, ref):
+    if x.shape[-2:] != ref.shape[-2:]:
+        x = F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
+    return x
 
 class MATHFI_TimmEncoder(nn.Module):
     """
@@ -68,14 +73,29 @@ class MATHFI_TimmEncoder(nn.Module):
         self.d4 = DecoderBlock(d3_ch, d4_ch)
 
         # === 5) MSU graph (use encoder widths) ===
-        self.msu_top   = AlignMSU(inA=C4, inB=B, out_ch=d1_ch)   # for d1
-        self.msu_A23   = AlignMSU(inA=C2, inB=C3, out_ch=d2_ch)  # for d2
-        self.msu_A34   = AlignMSU(inA=C3, inB=C4, out_ch=d1_ch)  # helper
-        self.msu_P2334 = AlignMSU(inA=d2_ch, inB=d1_ch, out_ch=d3_ch)
-        self.msu_Qlast = AlignMSU(inA=d3_ch, inB=d3_ch, out_ch=d4_ch)
+        # ==== MSU chain per paper (A, P, Q) ====
+        # A* must output at the spatial size of the first arg (inA)
+        self.msu_A12   = AlignMSU(inA=C1, inB=C2, out_ch=C1)  # -> size S1, C1 ch
+        self.msu_A23   = AlignMSU(inA=C2, inB=C3, out_ch=C2)  # -> size S2, C2 ch
+        self.msu_A34   = AlignMSU(inA=C3, inB=C4, out_ch=C3)  # -> size S3, C3 ch
 
-        # For clarity: MSU features per level (coarse→fine)
-        # FMSU_d1 uses (s4,b), FMSU_d2 uses (s3,s4) or (A23), FMSU_d3 uses P2334, FMSU_d4 uses Qlast.
+        # P* keep paper’s intent: P12_23 at S1, P23_34 at S2
+        self.msu_P12_23 = AlignMSU(inA=C1, inB=C2, out_ch=C1)  # MSU(A12, A23) -> size S1, C1 ch
+        self.msu_P23_34 = AlignMSU(inA=C2, inB=C3, out_ch=C2)  # MSU(A23, A34) -> size S2, C2 ch
+
+        # Qlast at S1 (used only at finest)
+        self.msu_Qlast  = AlignMSU(inA=C1, inB=C2, out_ch=C1)  # MSU(P12_23, P23_34) -> size S1, C1 ch
+
+        # ==== 1×1 projection heads for Step D ====
+        # d1: only S4
+        self.proj_d1 = nn.Conv2d(C4, d1_ch, kernel_size=1, bias=True) if C4 != d1_ch else nn.Identity()
+        # d2: concat(A34[S3: C3], S3[C3]) -> 2*C3 → d2_ch
+        self.proj_d2 = nn.Conv2d(2 * C3, d2_ch, kernel_size=1, bias=True)
+        # d3: concat(A23[S2: C2], P23_34[S2: C2], S2[C2]) -> 3*C2 → d3_ch
+        self.proj_d3 = nn.Conv2d(3 * C2, d3_ch, kernel_size=1, bias=True)
+        # d4: concat(A12[S1: C1], P12_23[S1: C1], Qlast[S1: C1], S1[C1]) -> 4*C1 → d4_ch
+        self.proj_d4 = nn.Conv2d(4 * C1, d4_ch, kernel_size=1, bias=True)
+
 
         # === 6) HAS-Skip using dynamic Cin_list/Cout_list/Cdec_list from the encoder ===
         self.has = HASSkip(
@@ -119,15 +139,37 @@ class MATHFI_TimmEncoder(nn.Module):
         b = self.bottleneck(s4)              # [N, B, H/16, W/16]
 
         # MSU graph (coarse helpers, similar semantics to your graph)
-        A23   = self.msu_A23(s2, s3)         # -> d2_ch
-        A34   = self.msu_A34(s3, s4)         # -> d1_ch
-        P2334 = self.msu_P2334(A23, A34)     # -> d3_ch
-        Qlast = self.msu_Qlast(P2334, P2334) # -> d4_ch
+        # === Step A: adjacent MSUs ===
+        A12 = self.msu_A12(s1, s2)   # size S1, C1
+        A23 = self.msu_A23(s2, s3)   # size S2, C2
+        A34 = self.msu_A34(s3, s4)   # size S3, C3
 
-        FMSU_d1 = self.msu_top(s4, b)        # -> d1_ch
-        FMSU_d2 = A23                        # -> d2_ch
-        FMSU_d3 = P2334                      # -> d3_ch
-        FMSU_d4 = Qlast                      # -> d4_ch
+        # === Step B: pair-of-pairs ===
+        P12_23 = self.msu_P12_23(A12, A23)   # size S1, C1
+        P23_34 = self.msu_P23_34(A23, A34)   # size S2, C2
+
+        # === Step C: final pre-fine feature ===
+        Qlast = self.msu_Qlast(P12_23, P23_34)  # size S1, C1
+
+        # === Step D: per-decoder MSU features (resize+concat+1x1) ===
+        # d1 (coarsest): Fd1MSU = S4
+        FMSU_d1 = self.proj_d1(s4)  # size S4, d1_ch
+
+        # d2: Fd2MSU = Conv1x1(Concat(A34@S3, S3@S3))
+        A34_s3 = _resize_like(A34, s3)
+        FMSU_d2 = self.proj_d2(torch.cat([A34_s3, s3], dim=1))  # size S3, d2_ch
+
+        # d3: Fd3MSU = Conv1x1(Concat(A23@S2, P23_34@S2, S2@S2))
+        A23_s2    = _resize_like(A23,    s2)
+        P2334_s2  = _resize_like(P23_34, s2)
+        FMSU_d3   = self.proj_d3(torch.cat([A23_s2, P2334_s2, s2], dim=1))  # size S2, d3_ch
+
+        # d4 (finest): Fd4MSU = Conv1x1(Concat(A12@S1, P12_23@S1, Qlast@S1, S1@S1))
+        A12_s1    = _resize_like(A12,    s1)
+        P1223_s1  = _resize_like(P12_23, s1)
+        Qlast_s1  = _resize_like(Qlast,  s1)
+        FMSU_d4   = self.proj_d4(torch.cat([A12_s1, P1223_s1, Qlast_s1, s1], dim=1))  # size S1, d4_ch
+
 
         # Decoder L1 (coarsest)
         FSKIP_d1 = self.has.forward_level(0, [s1, s2, s3, s4], b,  s4)
