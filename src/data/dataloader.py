@@ -64,11 +64,13 @@ def make_loaders(
     augs_val=None,                                # Albumentations Compose object with validation preprocessing
 
     # preprocessing 
+    use_color_space: str = 'RGB',
     use_gamma: bool = True,        
     gamma: float = 0.9,
     clahe_clip: float = 2.0,
     clahe_tiles: int = 8,
 
+    # patching
     patch_train: bool = False,
     patch_size: int = 512,
     vessel_bias_p: float = 0.6,
@@ -112,6 +114,7 @@ def make_loaders(
         image_size=image_size,
         augs=augs_train,
         strict_fov=strict_fov,
+        use_color_space= use_color_space,
         use_gamma = use_gamma,        
         gamma = gamma,
         clahe_clip = clahe_clip,
@@ -128,6 +131,7 @@ def make_loaders(
         image_size=image_size,
         augs=augs_val,
         strict_fov=strict_fov,
+        use_color_space= use_color_space,
         use_gamma = use_gamma,        
         gamma = gamma,
         clahe_clip = clahe_clip,

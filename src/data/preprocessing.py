@@ -215,3 +215,82 @@ def preprocess_image_rgb(path: str, target_size: int = 512) -> np.ndarray:
     rgb = _iso_resize_and_pad(rgb, target=target_size, pad_value=0.0)      # iso resize + pad
     return np.transpose(rgb, (2, 0, 1)).astype(np.float32)                  # HWC -> CHW float32
 
+
+
+## -- HSI Intensity preprocessing variant -- ##
+
+def _iso_resize_and_pad2(img: np.ndarray, target: int = 512, pad_value: float = 0.0, *, is_mask: bool = False):
+    """
+    Isotropic resize to fit the longer side to `target`, then symmetric pad to `target x target`.
+    - For masks: nearest-neighbor.
+    - For images: INTER_AREA when downscaling, INTER_LINEAR when upscaling.
+    """
+    h, w = img.shape[:2]
+    scale = float(target) / max(h, w)
+    nh, nw = int(round(h * scale)), int(round(w * scale))
+
+    if is_mask:
+        interp = cv2.INTER_NEAREST
+    else:
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+
+    resized = cv2.resize(img, (nw, nh), interpolation=interp)
+
+    top = (target - nh) // 2
+    bottom = target - nh - top
+    left = (target - nw) // 2
+    right = target - nw - left
+
+    padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
+                                borderType=cv2.BORDER_CONSTANT,
+                                value=(pad_value if img.ndim == 2 else [pad_value]*img.shape[2]))
+    return padded
+
+
+def preprocess_image_intensity_hsi(
+    path: str,
+    target_size: int = 512,
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
+    use_gamma: bool = True,
+    gamma: float = 0.9,
+) -> np.ndarray:
+    """
+    Same pipeline as preprocess_image_retina, but replaces G with HSI Intensity:
+      1) Read BGR (uint8).
+      2) Convert to RGB float [0,1], compute I = (R+G+B)/3.
+      3) Resize+pad I in 8-bit with AREA/LINEAR (no nearest).
+      4) CLAHE on I (uint8).
+      5) To float32 [0,1]; optional gamma.
+      6) Return (1, H, W) float32.
+
+    Notes:
+      - Masks/FOV handling unchanged elsewhere.
+      - Recompute normalization stats for I over the train split.
+    """
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(f"Could not load image at {path}")
+
+    # RGB in [0,1]
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    # HSI Intensity: average of channels (classic HSI definition)
+    I = rgb.mean(axis=2)  # shape (H, W), float32 in [0,1]
+
+    # Resize+pad in 8-bit for CLAHE efficiency
+    I_u8 = (I * 255.0).astype(np.uint8)
+    I_u8 = _iso_resize_and_pad2(I_u8, target=target_size, pad_value=0, is_mask=False)
+
+    # CLAHE on intensity
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
+    I_eq_u8 = clahe.apply(I_u8)
+
+    # Normalize to [0,1]
+    I_f = I_eq_u8.astype(np.float32) / 255.0
+
+    # Optional gentle gamma (helps lift faint vessels)
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        I_f = exposure.adjust_gamma(I_f, gamma=gamma)
+
+    return np.expand_dims(I_f.astype(np.float32), axis=0)  # (1, H, W)
