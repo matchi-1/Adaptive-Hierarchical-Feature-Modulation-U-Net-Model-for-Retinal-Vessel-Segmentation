@@ -151,3 +151,50 @@ def stare_loo_fold(dataset_root: str, label_folder: str = "1st_manual", fold_id:
     test_pairs  = [pairs[fold_id]]
     train_pairs = pairs[:fold_id] + pairs[fold_id+1:]
     return train_pairs, test_pairs
+
+
+
+
+
+# ------- TO REVISIT -- Monte-Carlo Split cross validation -------
+
+# ---------- CHASE-DB1: subject-wise random 20/8 ----------
+def chase_random_subject_split(dataset_root: str, label_folder: str = "1st_manual",
+                               seed: int = 1337, n_test_subjects: int = 4):
+    """
+    Random subject-wise split: pick n_test_subjects from the 14 subjects (→ 2*n_test_subjects images for TEST),
+    keep both eyes of each subject together.
+    """
+    all_pairs = build_pairs_all(dataset_root, label_folder=label_folder)
+    by_subject = defaultdict(list)
+    for (img, lab, *rest) in all_pairs:
+        sid = _parse_chase_subject_id(img)
+        by_subject[sid].append((img, lab, *rest))
+
+    subjects = sorted(by_subject.keys())
+    rng = random.Random(seed)
+    rng.shuffle(subjects)
+    test_subjects  = subjects[:n_test_subjects]
+    train_subjects = subjects[n_test_subjects:]
+
+    train_pairs = [p for sid in train_subjects for p in sorted(by_subject[sid], key=lambda t: _natural_key(Path(t[0])))]
+    test_pairs  = [p for sid in test_subjects  for p in sorted(by_subject[sid], key=lambda t: _natural_key(Path(t[0])))]
+    return train_pairs, test_pairs
+
+# ---------- DRIVE: random 20/20 (images, no subject pairing) ----------
+def drive_random_20_20(dataset_root: str, label_folder: str = "1st_manual", seed: int = 1337):
+    """
+    Randomly choose 20 images for TEST, remaining 20 for TRAIN.
+    """
+    all_pairs = build_pairs_all(dataset_root, label_folder=label_folder)  # 40 images expected
+    rng = random.Random(seed)
+    idx = list(range(len(all_pairs)))
+    rng.shuffle(idx)
+    test_idx  = set(idx[:20])
+    train_idx = [i for i in idx[20:]]
+    train_pairs = [all_pairs[i] for i in train_idx]
+    test_pairs  = [all_pairs[i] for i in test_idx]
+    # stable sort for readability
+    train_pairs.sort(key=lambda t: _natural_key(Path(t[0])))
+    test_pairs.sort(key=lambda t: _natural_key(Path(t[0])))
+    return train_pairs, test_pairs
