@@ -141,3 +141,13 @@ def split_stare_leave_one_out(
         test_pairs = [all_pairs[i]]
         train_pairs = all_pairs[:i] + all_pairs[i+1:]
         yield i, train_pairs, test_pairs
+
+# STARE leave one out (LOO) fold function
+def stare_loo_fold(dataset_root: str, label_folder: str = "1st_manual", fold_id: int = 0) -> Tuple[list, list]:
+    pairs = build_pairs_all(dataset_root, label_folder=label_folder)
+    pairs = sorted(pairs, key=lambda p: _natural_key(Path(p[0])))
+    assert len(pairs) == 20, f"Expected 20 STARE images, got {len(pairs)}"
+    assert 0 <= fold_id < 20
+    test_pairs  = [pairs[fold_id]]
+    train_pairs = pairs[:fold_id] + pairs[fold_id+1:]
+    return train_pairs, test_pairs
