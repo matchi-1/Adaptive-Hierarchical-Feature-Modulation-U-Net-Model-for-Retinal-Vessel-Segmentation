@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 from src.data.preprocessing import (
     preprocess_image_retina,
     preprocess_image_intensity_hsi,
+    preprocess_image_mdfi_weighted,
     preprocess_mask,
     derive_fov_mask_path_from_image,
 )
@@ -141,11 +142,14 @@ class FundusSegDataset(Dataset):
 
     # load a single fundus image and preprocess it into a normalized, square array
     def _load_image_hw(self, img_path: str) -> np.ndarray:
-        x = (
-            preprocess_image_retina(img_path, **self._pre_kw)
-            if self.use_color_space == "RGB"
-            else preprocess_image_intensity_hsi(img_path, **self._pre_kw)
-        )  # read image from disk, preprocess, return (1,H,W)
+        if   self.use_color_space == "RGB":
+            x = preprocess_image_retina(img_path, **self._pre_kw)
+        elif self.use_color_space == "HSI":
+            x = preprocess_image_intensity_hsi(img_path, **self._pre_kw)
+        elif self.use_color_space == "MDFI":
+            x = preprocess_image_mdfi_weighted(img_path, **self._pre_kw)
+        else:
+            raise ValueError(f"Unknown color_space: {self.use_color_space}")
         return x[0]  # removes the dummy channel dimension → final shape (H, W)
 
     # load the ground-truth vessel mask (binary label)

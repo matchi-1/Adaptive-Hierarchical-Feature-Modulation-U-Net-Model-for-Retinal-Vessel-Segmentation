@@ -294,3 +294,65 @@ def preprocess_image_intensity_hsi(
         I_f = exposure.adjust_gamma(I_f, gamma=gamma)
 
     return np.expand_dims(I_f.astype(np.float32), axis=0)  # (1, H, W)
+
+
+def preprocess_image_mdfi_weighted(
+    path: str,
+    target_size: int = 512,
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
+    use_gamma: bool = True,
+    gamma: float = 0.9,
+    weights_rgb: tuple[float, float, float] = (0.2793, 0.7041, 0.0166),
+) -> np.ndarray:
+    """
+    Preprocess fundus image using MDFI-Net's weighted grayscale:
+        I_w = wR*R + wG*G + wB*B (weights sum to 1 after normalization).
+
+    Steps (memory-safe, mirrors preprocess_image_retina):
+      1) Read BGR (uint8) -> convert to RGB [0,1]
+      2) Compute weighted grayscale I_w in float
+      3) Resize+pad in 8-bit with AREA/LINEAR (no nearest)
+      4) CLAHE on uint8
+      5) Convert to float32 [0,1]
+      6) Optional gamma
+      7) Return (1,H,W) float32
+
+    Notes:
+      - Masks/FOV unchanged elsewhere.
+      - If you tune weights, they will be renormalized to sum=1.
+    """
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(f"Could not load image at {path}")
+
+    # 1) BGR -> RGB in [0,1]
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    # 2) MDFI weighted grayscale (normalize weights defensively)
+    wR, wG, wB = weights_rgb
+    ws = wR + wG + wB
+    if ws <= 0:
+        raise ValueError("weights_rgb must have positive sum")
+    wR, wG, wB = wR / ws, wG / ws, wB / ws
+
+    Iw = wR * rgb[..., 0] + wG * rgb[..., 1] + wB * rgb[..., 2]  # float in [0,1]
+
+    # 3) Resize+pad via 8-bit path for CLAHE speed/stability
+    Iw_u8 = (Iw * 255.0 + 0.5).astype(np.uint8)
+    Iw_u8 = _iso_resize_and_pad2(Iw_u8, target=target_size, pad_value=0, is_mask=False)
+
+    # 4) CLAHE (local contrast)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
+    Iw_eq_u8 = clahe.apply(Iw_u8)
+
+    # 5) To float [0,1]
+    Iw_f = Iw_eq_u8.astype(np.float32) / 255.0
+
+    # 6) Optional gentle gamma
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        Iw_f = exposure.adjust_gamma(Iw_f, gamma=gamma)
+
+    # 7) Add channel dim
+    return np.expand_dims(Iw_f.astype(np.float32), axis=0)  # (1,H,W)
+
