@@ -191,4 +191,11 @@ class MATHFI_TimmEncoder(nn.Module):
         FB4      = self.asfg_d4(FMSU_d4, FSKIP_d4)
         d4       = self.d4(d3, FB4)
 
-        return self.final(d4)
+        # --- final head ---
+        logits = self.final(d4)
+
+        # --- ensure logits match input HxW (and mask) ---
+        if logits.shape[-2:] != x1chw.shape[-2:]:
+            logits = F.interpolate(logits, size=x1chw.shape[-2:], mode="bilinear", align_corners=False)
+
+        return logits
