@@ -69,6 +69,7 @@ def make_loaders(
     gamma: float = 0.9,
     clahe_clip: float = 2.0,
     clahe_tiles: int = 8,
+    weights_rgb: Tuple[float, float, float] = (0.2793, 0.7041, 0.0166),
 
     # patching
     patch_train: bool = False,

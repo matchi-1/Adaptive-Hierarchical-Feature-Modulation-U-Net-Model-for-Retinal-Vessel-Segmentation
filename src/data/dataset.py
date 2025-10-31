@@ -49,7 +49,8 @@ class FundusSegDataset(Dataset):
         vessel_bias_p: float = 0.6,   # chance to center crop on vessel pixels
         dense_bias_p: float = None,
         min_percent_vessel: float = 0.01,  # min vessel pixels as percent of patch area; if not met, resample uniformly
-        virtual_mult: int = 100
+        virtual_mult: int = 100,
+        weights_rgb: tuple[float, float, float] = (0.2793, 0.7041, 0.0166),
         ):
 
         self.use_color_space = use_color_space
@@ -65,6 +66,7 @@ class FundusSegDataset(Dataset):
         self.dense_bias_p = dense_bias_p
         self.min_percent_vessel = min_percent_vessel
         self.virtual_mult = virtual_mult
+        self.weights_rgb = weights_rgb
 
         # configuration bundle for preprocess_image_retina
         self._pre_kw = dict(
@@ -146,11 +148,12 @@ class FundusSegDataset(Dataset):
             x = preprocess_image_retina(img_path, **self._pre_kw)
         elif self.use_color_space == "HSI":
             x = preprocess_image_intensity_hsi(img_path, **self._pre_kw)
-        elif self.use_color_space == "MDFI":
-            x = preprocess_image_mdfi_weighted(img_path, **self._pre_kw)
+        elif self.use_color_space == "WRGB":
+            x = preprocess_image_mdfi_weighted(img_path, weights_rgb=self.weights_rgb, **self._pre_kw)
         else:
             raise ValueError(f"Unknown color_space: {self.use_color_space}")
         return x[0]  # removes the dummy channel dimension → final shape (H, W)
+
 
     # load the ground-truth vessel mask (binary label)
     def _load_label_hw(self, lab_path: str) -> np.ndarray:
