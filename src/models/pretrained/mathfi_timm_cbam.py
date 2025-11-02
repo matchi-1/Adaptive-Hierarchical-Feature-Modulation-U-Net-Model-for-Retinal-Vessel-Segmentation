@@ -77,7 +77,7 @@ class MATHFI_TimmEncoder(nn.Module):
                     vconf_avgpool_erode=True,
                     gain_mode="tanh_exp",
                     smooth_E_twice=True,
-                    aggregate_mode="mean"             # 4-D output
+                    aggregate="mean"             # 4-D output
                 )
             else:
                 dpcn_out_ch = dpcn_ch
