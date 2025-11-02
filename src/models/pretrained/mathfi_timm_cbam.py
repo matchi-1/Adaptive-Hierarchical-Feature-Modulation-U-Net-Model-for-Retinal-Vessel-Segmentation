@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from timm import create_model
 
 from src.models.dpcn.dpcn_v2 import DPCN
+from src.models.dpcn.dpcn_v3 import DPCN as DPCN_tamed
 from src.models.blocks.msu import MSU
 from src.models.blocks.cbam import CBAM
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import HASSkip, AdaptiveSelectiveFusionGate, ResidualCBAM
@@ -40,7 +41,8 @@ class MATHFI_TimmEncoder(nn.Module):
                  encoder_name: str = "res2net50_26w_4s",
                  use_dpcn: bool = True,
                  dpcn_ch: int = 64, dpcn_iters: int = 6,
-                 cbam_reduction: int = 16):
+                 cbam_reduction: int = 16,
+                 use_tamed_dpcn: bool = False):
         super().__init__()
 
         # === 0) Input adapter ===
@@ -56,10 +58,25 @@ class MATHFI_TimmEncoder(nn.Module):
         # === 2) Optional DPCN-VAT on shallowest stage ===
         self.use_dpcn = use_dpcn
         if use_dpcn:
-            # run DPCN on raw input and fuse into C1
-            self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
-                             threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
-            self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
+            if use_tamed_dpcn:
+                # use tamed DPCN v3
+                self.dpcn = DPCN_tamed(
+                                        in_ch=1, channels=64, iters=6,
+                                        threshold_mode="scaled_vat",
+                                        half_life=1.2,                 # <<< sharper suppression
+                                        vconf_from="x",
+                                        use_deformable=True,
+                                        vconf_gamma=1.6,               # <<< stricter
+                                        vconf_floor=0.30,
+                                        vconf_avgpool_erode=True,
+                                        gain_mode="tanh_exp",          # <<< gentler than pure exp
+                                        smooth_E_twice=True,
+                                    )
+            else:
+                # run DPCN on raw input and fuse into C1
+                self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
+                                threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
+                self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
 
         # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like your UNet ===
         self.bottleneck = ConvBlock(C4, C4*2)  # like your 512→1024; adjust if needed
