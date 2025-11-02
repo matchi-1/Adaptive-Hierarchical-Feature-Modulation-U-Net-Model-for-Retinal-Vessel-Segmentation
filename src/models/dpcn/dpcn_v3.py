@@ -73,11 +73,15 @@ class DPCNIter(nn.Module):
         norm_on_L: Literal["instance", "batch", "none"] = "instance",
         smooth_E: bool = True,
         use_deformable: Optional[bool] = None,
+        gain_mode: Literal["exp", "tanh_exp", "linear"] = "tanh_exp",   # <<< NEW (default gentler)
+        smooth_E_twice: bool = True,                                     # <<< NEW
     ):
         super().__init__()
         self.channels = int(channels)
         self.threshold_mode = threshold_mode.lower()
         self.smooth_E = bool(smooth_E)
+        self.gain_mode = gain_mode        # <<< NEW
+        self.smooth_E_twice = smooth_E_twice and bool(smooth_E)  # <<< NEW
 
         # Decide deformable availability
         if use_deformable is None:
@@ -102,6 +106,12 @@ class DPCNIter(nn.Module):
         self.offset_conv = nn.Conv2d(channels, off_ch, kernel_size=3, padding=1)
         nn.init.zeros_(self.offset_conv.weight)
         nn.init.zeros_(self.offset_conv.bias)
+
+        # Scale the predicted offsets to keep deformations small
+        self.offset_scale = nn.Parameter(torch.tensor(0.20))  # <<< NEW
+        
+        # Keep a tiny running reg on offsets (filled in forward)
+        self.last_off_l2 = None  # <<< NEW
 
         # ---- Kernel weights for the (deformable) conv ----
         w = torch.empty(channels, channels, k, k)
