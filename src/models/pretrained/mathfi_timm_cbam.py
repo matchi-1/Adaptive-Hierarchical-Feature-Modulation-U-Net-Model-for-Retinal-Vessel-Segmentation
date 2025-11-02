@@ -75,7 +75,7 @@ class MATHFI_TimmEncoder(nn.Module):
                                         vconf_avgpool_erode=True,
                                         gain_mode="tanh_exp",          # <<< gentler than pure exp
                                         smooth_E_twice=True,
-                                        aggregate_mode="mean"
+                                        aggregate="mean"
                                     )
             else:
                 # run DPCN on raw input and fuse into C1
