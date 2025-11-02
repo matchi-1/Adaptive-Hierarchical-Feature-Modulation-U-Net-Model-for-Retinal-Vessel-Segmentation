@@ -59,8 +59,7 @@ class MATHFI_TimmEncoder(nn.Module):
         enc_chs = self.encoder.feature_info.channels()  # e.g., [64, 256, 512, 1024]
         C1, C2, C3, C4 = enc_chs
 
-        # === 2) Optional DPCN-VAT on shallowest stage ===
-        self.use_dpcn = use_dpcn
+        # === 2) DPCN-VAT on shallowest stage ===
         if use_dpcn:
             if use_tamed_dpcn:
                 # use tamed DPCN v3
@@ -75,7 +74,7 @@ class MATHFI_TimmEncoder(nn.Module):
                                         vconf_avgpool_erode=True,
                                         gain_mode="tanh_exp",          # <<< gentler than pure exp
                                         smooth_E_twice=True,
-                                        aggregate="mean"
+                                        aggregate_mode="mean"
                                     )
             else:
                 # run DPCN on raw input and fuse into C1
@@ -163,14 +162,19 @@ class MATHFI_TimmEncoder(nn.Module):
         s1, s2, s3, s4 = self.encoder(x3chw) # [C1,C2,C3,C4]
 
         # DPCN-VAT fused into s1
+        # === 2) Optional DPCN-VAT on shallowest stage ===
+        self.use_dpcn = use_dpcn
         if self.use_dpcn:
-            dpcn_feat = self.dpcn(x1chw)     # should be [N,C,H,W]
-            if dpcn_feat.dim() == 5:
+            dpcn_feat = self.dpcn(x1chw)  # expected [N, dpcn_out_ch, H, W] since aggregate='mean'
+            if dpcn_feat.dim() == 5:       # safety for accidental N,T,C,H,W
                 N, T, C, H, W = dpcn_feat.shape
-                dpcn_feat = dpcn_feat.reshape(N, T * C, H, W)
+                dpcn_feat = dpcn_feat.view(N, T * C, H, W)
+                if self._dpcn_reduce_to_c1 is None:
+                    # project T*C -> C (or directly to C1; either is fine since we fuse next)
+                    self._dpcn_reduce_to_c1 = nn.Conv2d(T * C, C, kernel_size=1, bias=True).to(dpcn_feat.device)
                 dpcn_feat = self._dpcn_reduce_to_c1(dpcn_feat)
 
-            s1 = self.fuse_c1(s1, dpcn_feat)  # now guaranteed 4-D
+            s1 = self.fuse_c1(s1, dpcn_feat)  # 4-D guaranteed
 
         # ---- NEW: apply encoder CBAMs ----
         s1 = self.enc_cbam[0](s1)
