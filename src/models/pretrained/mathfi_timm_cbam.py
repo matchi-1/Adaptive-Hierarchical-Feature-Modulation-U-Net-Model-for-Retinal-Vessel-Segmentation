@@ -26,10 +26,14 @@ class AlignMSU(nn.Module):
             B_ = F.interpolate(B_, size=A_.shape[-2:], mode='bilinear', align_corners=False)
         return self.msu(A_, B_)
     
-def _resize_like(x, ref):
+# --- 3) Make _resize_like debug-friendly (so you catch any future 5-D early) ---
+def _resize_like(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    if x.dim() != 4 or ref.dim() != 4:
+        raise ValueError(f"_resize_like expects 4-D tensors, got {x.shape=} and {ref.shape=}")
     if x.shape[-2:] != ref.shape[-2:]:
         x = F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
     return x
+
 
 class MATHFI_TimmEncoder(nn.Module):
     """
@@ -71,6 +75,7 @@ class MATHFI_TimmEncoder(nn.Module):
                                         vconf_avgpool_erode=True,
                                         gain_mode="tanh_exp",          # <<< gentler than pure exp
                                         smooth_E_twice=True,
+                                        aggregate_mode="mean"
                                     )
             else:
                 # run DPCN on raw input and fuse into C1
@@ -159,9 +164,13 @@ class MATHFI_TimmEncoder(nn.Module):
 
         # DPCN-VAT fused into s1
         if self.use_dpcn:
-            dpcn_feat = self.dpcn(x1chw)                      # [N, C_dpcn, H, W]
-            dpcn_feat = _resize_like(dpcn_feat, s1)           # ↓ match S1 spatial size
-            s1 = self.fuse_c1(s1, dpcn_feat)                  # channels -> C1
+            dpcn_feat = self.dpcn(x1chw)     # should be [N,C,H,W]
+            if dpcn_feat.dim() == 5:
+                N, T, C, H, W = dpcn_feat.shape
+                dpcn_feat = dpcn_feat.reshape(N, T * C, H, W)
+                dpcn_feat = self._dpcn_reduce_to_c1(dpcn_feat)
+
+            s1 = self.fuse_c1(s1, dpcn_feat)  # now guaranteed 4-D
 
         # ---- NEW: apply encoder CBAMs ----
         s1 = self.enc_cbam[0](s1)
