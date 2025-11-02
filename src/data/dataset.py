@@ -12,6 +12,7 @@ from src.data.preprocessing import (
     preprocess_image_intensity_hsi,
     preprocess_image_mdfi_weighted,
     preprocess_mask,
+    preprocess_image_hsi,
     derive_fov_mask_path_from_image,
 )
 
@@ -146,10 +147,12 @@ class FundusSegDataset(Dataset):
     def _load_image_hw(self, img_path: str) -> np.ndarray:
         if   self.use_color_space == "RGB":
             x = preprocess_image_retina(img_path, **self._pre_kw)
-        elif self.use_color_space == "HSI":
+        elif self.use_color_space == "HSI_I":
             x = preprocess_image_intensity_hsi(img_path, **self._pre_kw)
         elif self.use_color_space == "WRGB":
             x = preprocess_image_mdfi_weighted(img_path, weights_rgb=self.weights_rgb, **self._pre_kw)
+        elif self.use_color_space == "HSI":
+            x = preprocess_image_hsi(img_path, **self._pre_kw)
         else:
             raise ValueError(f"Unknown color_space: {self.use_color_space}")
         return x[0]  # removes the dummy channel dimension → final shape (H, W)

@@ -356,3 +356,93 @@ def preprocess_image_mdfi_weighted(
     # 7) Add channel dim
     return np.expand_dims(Iw_f.astype(np.float32), axis=0)  # (1,H,W)
 
+
+def _iso_resize_and_pad_img(img, target):
+    h, w = img.shape[:2]
+    scale = float(target) / max(h, w)
+    nh, nw = int(round(h*scale)), int(round(w*scale))
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    img = cv2.resize(img, (nw, nh), interpolation=interp)
+    top = (target - nh) // 2; bottom = target - nh - top
+    left = (target - nw) // 2; right = target - nw - left
+    return cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+
+def _homomorphic_gray(x, sigma=18):
+    # x in [0,1] float32
+    eps = 1e-6
+    logx = np.log(x + eps)
+    base = cv2.GaussianBlur(logx, (0,0), sigmaX=sigma, sigmaY=sigma)
+    detail = logx - base
+    y = np.exp(detail)
+    return np.clip(y, 0, 1)
+
+def preprocess_image_hsi(
+    path: str,
+    target_size: int = 512,
+    space: str = "HSV_V",          # "HSI_I" or "HSV_V" (V is often a tad more robust)
+    use_homomorphic: bool = True,  # illumination flattening (↑SPE)
+    homo_sigma: int = 18,
+    suppress_highlights: bool = True,
+    glare_V_thresh: int = 230,     # 0–255 on V
+    glare_S_thresh: int = 30,      # 0–255 on S (low-sat, likely glare/OD rim)
+    clahe_clip: float = 1.8,       # conservative to avoid boosting noise
+    clahe_tiles: int = 4,
+    use_gamma: bool = True,
+    gamma: float = 0.9,
+):
+    """
+    Single-channel luminance preproc optimized for specificity (SPE).
+    Returns (1, H, W) float32 in [0,1]. Masks/loss/FOV unchanged elsewhere.
+    """
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(path)
+    rgb_u8 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    # ----- luminance channel from HSI/HSV -----
+    if space == "HSV_V":
+        hsv = cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2HSV)  # H:0-179, S,V:0-255
+        V = hsv[..., 2].astype(np.float32) / 255.0
+        lum = V
+        S_u8 = hsv[..., 1]
+        V_u8 = hsv[..., 2]
+    elif space == "HSI_I":
+        rgb = rgb_u8.astype(np.float32) / 255.0
+        lum = rgb.mean(axis=2)  # I = (R+G+B)/3
+        # Build approximate S,V for highlight suppression if enabled
+        hsv = cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2HSV)
+        S_u8 = hsv[..., 1]
+        V_u8 = hsv[..., 2]
+    else:
+        raise ValueError("space must be 'HSV_V' or 'HSI_I'")
+
+    # ----- optional highlight suppression (reduces FPs) -----
+    if suppress_highlights:
+        glare = (V_u8 >= glare_V_thresh) & (S_u8 <= glare_S_thresh)
+        if glare.any():
+            # Clamp luminance in glare areas to local median to avoid bright halos
+            glare = glare.astype(np.uint8) * 255
+            kernel = np.ones((9,9), np.uint8)
+            glare = cv2.dilate(glare, kernel, iterations=1)  # expand slightly
+            glare_mask = (glare > 0)
+            # local median on small window; fallback to global median if needed
+            lum_med = cv2.medianBlur((lum*255).astype(np.uint8), 9).astype(np.float32)/255.0
+            lum = np.where(glare_mask, lum_med, lum)
+
+    # ----- illumination correction (homomorphic) -----
+    if use_homomorphic:
+        lum = _homomorphic_gray(lum.astype(np.float32), sigma=homo_sigma)
+
+    # ----- resize + pad in 8-bit for stable CLAHE -----
+    lum_u8 = (np.clip(lum,0,1)*255 + 0.5).astype(np.uint8)
+    lum_u8 = _iso_resize_and_pad_img(lum_u8, target_size)
+
+    # ----- conservative CLAHE on luminance -----
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
+    lum_eq = clahe.apply(lum_u8).astype(np.float32) / 255.0
+
+    # ----- gentle gamma (optional) -----
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        lum_eq = exposure.adjust_gamma(lum_eq, gamma=gamma)
+
+    return np.expand_dims(lum_eq.astype(np.float32), 0)
