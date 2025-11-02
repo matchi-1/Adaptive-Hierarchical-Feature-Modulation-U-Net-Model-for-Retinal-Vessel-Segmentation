@@ -60,27 +60,36 @@ class MATHFI_TimmEncoder(nn.Module):
         C1, C2, C3, C4 = enc_chs
 
         # === 2) DPCN-VAT on shallowest stage ===
-        if use_dpcn:
+        self.use_dpcn = use_dpcn                      # <-- remember the flag
+        self._dpcn_reduce_to_c1 = None                # <-- lazy reducer for (rare) 5-D case
+
+        if self.use_dpcn:
             if use_tamed_dpcn:
-                # use tamed DPCN v3
+                dpcn_out_ch = 64                      # MUST match channels below
                 self.dpcn = DPCN_tamed(
-                                        in_ch=1, channels=64, iters=6,
-                                        threshold_mode="scaled_vat",
-                                        half_life=1.2,                 # <<< sharper suppression
-                                        vconf_from="x",
-                                        use_deformable=True,
-                                        vconf_gamma=1.6,               # <<< stricter
-                                        vconf_floor=0.30,
-                                        vconf_avgpool_erode=True,
-                                        gain_mode="tanh_exp",          # <<< gentler than pure exp
-                                        smooth_E_twice=True,
-                                        aggregate_mode="mean"
-                                    )
+                    in_ch=1, channels=dpcn_out_ch, iters=6,
+                    threshold_mode="scaled_vat",
+                    half_life=1.2,
+                    vconf_from="x",
+                    use_deformable=True,
+                    vconf_gamma=1.6,
+                    vconf_floor=0.30,
+                    vconf_avgpool_erode=True,
+                    gain_mode="tanh_exp",
+                    smooth_E_twice=True,
+                    aggregate_mode="mean"             # 4-D output
+                )
             else:
-                # run DPCN on raw input and fuse into C1
-                self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
-                                threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
-                self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
+                dpcn_out_ch = dpcn_ch
+                self.dpcn = DPCN(
+                    in_ch=1, channels=dpcn_out_ch, iters=dpcn_iters,
+                    threshold_mode="scaled_vat", half_life=2.0,
+                    aggregate="mean"                  # 4-D output
+                )
+
+            # define fuse_c1 OUTSIDE the if/else so it exists for both variants
+            self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_out_ch, out_ch=C1)
+
 
         # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like your UNet ===
         self.bottleneck = ConvBlock(C4, C4*2)  # like your 512→1024; adjust if needed
@@ -162,19 +171,17 @@ class MATHFI_TimmEncoder(nn.Module):
         s1, s2, s3, s4 = self.encoder(x3chw) # [C1,C2,C3,C4]
 
         # DPCN-VAT fused into s1
-        # === 2) Optional DPCN-VAT on shallowest stage ===
-        self.use_dpcn = use_dpcn
+        # === 2) DPCN-VAT on shallowest stage ===
         if self.use_dpcn:
-            dpcn_feat = self.dpcn(x1chw)  # expected [N, dpcn_out_ch, H, W] since aggregate='mean'
-            if dpcn_feat.dim() == 5:       # safety for accidental N,T,C,H,W
+            dpcn_feat = self.dpcn(x1chw)  # expected [N, dpcn_out_ch, H, W] (aggregate='mean')
+            if dpcn_feat.dim() == 5:       # safety for accidental [N,T,C,H,W]
                 N, T, C, H, W = dpcn_feat.shape
-                dpcn_feat = dpcn_feat.view(N, T * C, H, W)
+                dpcn_feat = dpcn_feat.view(N, T*C, H, W)
                 if self._dpcn_reduce_to_c1 is None:
-                    # project T*C -> C (or directly to C1; either is fine since we fuse next)
-                    self._dpcn_reduce_to_c1 = nn.Conv2d(T * C, C, kernel_size=1, bias=True).to(dpcn_feat.device)
+                    self._dpcn_reduce_to_c1 = nn.Conv2d(T*C, C, kernel_size=1, bias=True).to(dpcn_feat.device)
                 dpcn_feat = self._dpcn_reduce_to_c1(dpcn_feat)
+            s1 = self.fuse_c1(s1, dpcn_feat)
 
-            s1 = self.fuse_c1(s1, dpcn_feat)  # 4-D guaranteed
 
         # ---- NEW: apply encoder CBAMs ----
         s1 = self.enc_cbam[0](s1)
