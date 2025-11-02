@@ -109,7 +109,7 @@ class DPCNIter(nn.Module):
 
         # Scale the predicted offsets to keep deformations small
         self.offset_scale = nn.Parameter(torch.tensor(0.20))  # <<< NEW
-        
+
         # Keep a tiny running reg on offsets (filled in forward)
         self.last_off_l2 = None  # <<< NEW
 
@@ -158,6 +158,7 @@ class DPCNIter(nn.Module):
         # 1) Coupled Linking
         if self.use_deformable:
             offsets = self.offset_conv(y_prev)  # [N,18,H,W]
+            offsets = self.offset_scale * offsets           # <<< NEW: shrink offsets
             L = _deform_conv2d(
                 input=y_prev,
                 offset=offsets,
@@ -165,14 +166,23 @@ class DPCNIter(nn.Module):
                 bias=self.bias,
                 stride=1, padding=1, dilation=1, mask=None
             )
+            # track L2 for reg
+            self.last_off_l2 = offsets.pow(2).mean()        # <<< NEW
         else:
             # fallback: plain conv
             L = F.conv2d(y_prev, self.weight, self.bias, stride=1, padding=1, dilation=1)
+            self.last_off_l2 = None                         # <<< NEW 
 
         L = self.norm_L(L)
 
         # 2) Positive modulation gate: U = F * exp(beta * L)
         beta = self._beta()
+        if self.gain_mode == "exp":
+            gain = torch.exp(beta * L)
+        elif self.gain_mode == "tanh_exp":                  # <<< NEW
+            gain = torch.exp(beta * torch.tanh(L))          # caps |L| effect
+        else:  # "linear"                                   # <<< NEW
+            gain = (1.0 + beta * L).clamp_min(0.0)
         U = F_in * torch.exp(beta * L)
 
         # 3) Dynamic Threshold
@@ -199,7 +209,8 @@ class DPCNIter(nn.Module):
         E = decay * E_prev + grow_term
         if self.smooth_E:
             E = self.smoothE(E)
-
+            if self.smooth_E_twice:                         # <<< NEW
+                E = self.smoothE(E)
         # 4) Activation
         y = torch.sigmoid(U - E)
         return y, E
