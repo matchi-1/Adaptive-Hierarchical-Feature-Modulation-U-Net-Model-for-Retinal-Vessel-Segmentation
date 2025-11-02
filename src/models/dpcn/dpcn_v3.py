@@ -254,6 +254,12 @@ class DPCN(nn.Module):
         aggregate: Literal["stack", "last", "mean", "max"] = "stack",
         vconf_from: Literal["x", "F"] = "x",
         use_deformable: Optional[bool] = None,
+        # --- NEW knobs ---
+        vconf_gamma: float = 1.5,        # sharpen confidence (1.3–2.0 is typical)
+        vconf_floor: float = 0.30,       # lift the floor so weak regions contribute less
+        vconf_avgpool_erode: bool = True,# pseudo-erosion to reduce halos
+        gain_mode: Literal["exp","tanh_exp","linear"] = "tanh_exp",  # pass-through to iter
+        smooth_E_twice: bool = True,     # pass-through to iter
     ):
         super().__init__()
         channels = channels or in_ch
@@ -264,6 +270,10 @@ class DPCN(nn.Module):
         self.threshold_mode = threshold_mode.lower()
         self.aggregate_mode = aggregate
         self.vconf_from = vconf_from
+        self.vconf_gamma = float(vconf_gamma)              # <<< NEW
+        self.vconf_floor = float(vconf_floor)              # <<< NEW
+        self.vconf_avgpool_erode = bool(vconf_avgpool_erode)  # <<< NEW
+        self.last_offset_reg = torch.tensor(0.0)           # <<< NEW (exposed to caller)
 
         # aE from half-life (iterations): aE = ln(2)/h
         if half_life <= 0:
@@ -295,11 +305,20 @@ class DPCN(nn.Module):
             norm_on_L=norm_on_L,
             smooth_E=smooth_E,
             use_deformable=use_deformable,
+            gain_mode=gain_mode,                           # <<< NEW
+            smooth_E_twice=smooth_E_twice,                 # <<< NEW
         )
 
     @torch.no_grad()
     def _make_vconf(self, base: torch.Tensor) -> torch.Tensor:
-        Vconf = self.vconf_branch(base)
+        Vconf = self.vconf_branch(base)                    # [N,1,H,W] in [0,1]
+        # --- sharpen & floor ---
+        Vconf = Vconf.clamp(1e-6, 1-1e-6).pow(self.vconf_gamma)          # <<< NEW
+        t = self.vconf_floor
+        Vconf = ((Vconf - t) / max(1e-6, 1 - t)).clamp(0, 1)             # <<< NEW
+        if self.vconf_avgpool_erode:                                      # <<< NEW
+            # cheap erosion-like shrink to reduce halos
+            Vconf = F.avg_pool2d(Vconf, kernel_size=3, stride=1, padding=1)
         return Vconf
 
     def forward(
@@ -337,13 +356,18 @@ class DPCN(nn.Module):
         if fov is not None:
             fov = fov.to(y.dtype)
 
+        self.last_offset_reg = torch.tensor(0.0, device=x.device, dtype=x.dtype)  # <<< NEW reset
         ys = []
         for _ in range(self.iters):
             y, E = self.cell(y_prev=y, F_in=F_in, E_prev=E,
-                             Vconf=Vconf if self.threshold_mode not in ("paper", "paper_mod") else None)
+                             Vconf=Vconf if self.threshold_mode not in ("paper","paper_mod") else None)
+            # accumulate offsets L2 if available
+            if getattr(self.cell, "last_off_l2", None) is not None:              # <<< NEW
+                self.last_offset_reg = self.last_offset_reg + self.cell.last_off_l2
             if fov is not None and self.clamp_each_iter:
                 y = y * fov
             ys.append(y)
+
 
         # If we didn’t clamp each step, clamp last
         if fov is not None and not self.clamp_each_iter:
