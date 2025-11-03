@@ -12,6 +12,7 @@ from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved
 from src.models.unet import DecoderBlock, ConvBlock
 from src.models.pretrained.bridges.bridges import GrayToRGB, FuseCat1x1
 
+
 # ---------- helpers ----------
 class AlignMSU(nn.Module):
     def __init__(self, inA, inB, out_ch, use_bn=True, activation=True):
@@ -19,45 +20,47 @@ class AlignMSU(nn.Module):
         self.projA = nn.Conv2d(inA, out_ch, 1, bias=True)
         self.projB = nn.Conv2d(inB, out_ch, 1, bias=True)
         self.msu   = MSU(in_channels=out_ch, out_channels=out_ch, use_bn=use_bn, activation=activation)
+
     def forward(self, A, B):
         A_ = self.projA(A); B_ = self.projB(B)
         if B_.shape[-2:] != A_.shape[-2:]:
             B_ = F.interpolate(B_, size=A_.shape[-2:], mode="bilinear", align_corners=False)
         return self.msu(A_, B_)
 
-def _resize_like(x, ref):
+
+def _resize_like(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
     if x.shape[-2:] != ref.shape[-2:]:
         x = F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
     return x
 
-# ---------- NEW: Edge-aware final refiner (for SPE) ----------
+
+# ---------- Edge-aware final refiner (for SPE) ----------
 class EdgeAwareRefiner(nn.Module):
     """
-    Produces an attention map from input gradients + decoder cues to suppress background haze
-    and over-thick predictions. Gates the final *logits* (pre-sigmoid).
+    Builds an attention map from input gradients + a decoder cue, then gates logits to reduce
+    background haze / thickness. All ops are AMP-safe.
     """
     def __init__(self, dec_ch: int, k_dw: int = 5, tau: float = 6.0):
         super().__init__()
         pad = k_dw // 2
-        # depthwise smoothing to stabilize the predicted attention
+        # fixed depthwise smoothing (registered as a module so AMP handles casting)
         self.dw_smooth = nn.Conv2d(1, 1, kernel_size=k_dw, padding=pad, groups=1, bias=False)
         with torch.no_grad():
             self.dw_smooth.weight.fill_(1.0 / (k_dw * k_dw))
         for p in self.dw_smooth.parameters():
             p.requires_grad = False
 
-        # tiny head that mixes input gradient and a decoder feature summary
         self.dec_proj = nn.Conv2d(dec_ch, 16, kernel_size=1, bias=True)
         self.att_head = nn.Sequential(
             nn.Conv2d(16 + 1, 16, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1)
         )
-        self.tau = tau  # temperature for contrast -> attention
+        self.tau = tau
 
     @staticmethod
     def _grad_mag(x1chw: torch.Tensor) -> torch.Tensor:
-        # Sobel-like fixed filters
+        # Create Sobel kernels with the SAME dtype/device as input (AMP-safe).
         kx = torch.tensor([[-1., 0., 1.],
                            [-2., 0., 2.],
                            [-1., 0., 1.]], device=x1chw.device, dtype=x1chw.dtype).view(1,1,3,3)
@@ -66,44 +69,34 @@ class EdgeAwareRefiner(nn.Module):
                            [ 1.,  2.,  1.]], device=x1chw.device, dtype=x1chw.dtype).view(1,1,3,3)
         gx = F.conv2d(x1chw, kx, padding=1)
         gy = F.conv2d(x1chw, ky, padding=1)
-        mag = torch.sqrt(torch.clamp_min(gx*gx + gy*gy, 1e-12))
-        # normalize per-image for stability
+        mag = torch.sqrt(torch.clamp_min(gx * gx + gy * gy, 1e-12))
         mag = mag / (mag.amax(dim=(2,3), keepdim=True) + 1e-6)
         return mag
 
     def forward(self, logits: torch.Tensor, x1chw: torch.Tensor, dec_feat: torch.Tensor) -> torch.Tensor:
-        """
-        logits: [N,1,H,W] pre-sigmoid
-        x1chw:  [N,1,H,W] input (grayscale)
-        dec_feat: one of the fine decoder maps, e.g., d3 or d4 (channels=dec_ch)
-        """
-        # compute input gradient magnitude at output res
+        # match sizes
         if x1chw.shape[-2:] != logits.shape[-2:]:
             x_in = F.interpolate(x1chw, size=logits.shape[-2:], mode="bilinear", align_corners=False)
         else:
             x_in = x1chw
-        g = self._grad_mag(x_in)             # [N,1,H,W]
-        g = self.dw_smooth(g)                # de-noise gradients
-
-        # bring dec_feat to logits res and project
         if dec_feat.shape[-2:] != logits.shape[-2:]:
             dec_feat = F.interpolate(dec_feat, size=logits.shape[-2:], mode="bilinear", align_corners=False)
-        q = self.dec_proj(dec_feat)          # [N,16,H,W]
 
-        # attention from [q, g]
-        att = self.att_head(torch.cat([q, g], dim=1))  # [N,1,H,W]
-        # sigmoid with temperature; higher g → higher att; but network can learn negatives in att
+        g = self._grad_mag(x_in)     # [N,1,H,W], dtype matches logits
+        g = self.dw_smooth(g)        # light de-noise
+        q = self.dec_proj(dec_feat)  # [N,16,H,W]
+
+        att = self.att_head(torch.cat([q, g], dim=1))
         att = torch.sigmoid(self.tau * att)
+        return logits * att.clamp(0.6, 1.0)
 
-        # gate logits: push down ambiguous low-edge zones slightly (<1 multiplier)
-        return logits * att.clamp(0.6, 1.0)  # clamp floor avoids collapsing sensitivity
 
 # ---------- SPE-focused model ----------
 class MATHFI_TimmEncoder_SPE(nn.Module):
     """
-    Same backbone and MSU/HAS/ASFG as your current model, with:
-      - ASFG priors nudged for fine scales (favor HAS to reduce thickening)
-      - EdgeAwareRefiner after decoder to suppress low-contrast background FPs
+    MathFI with timm encoder + MSU/HAS/ASFG, plus:
+      • Fine-scale ASFG prior tweaks (favor HAS to reduce thickening)
+      • EdgeAwareRefiner to curb low-contrast false positives
     """
     def __init__(self,
                  encoder_name: str = "res2net50_26w_4s",
@@ -114,14 +107,14 @@ class MATHFI_TimmEncoder_SPE(nn.Module):
         super().__init__()
         self.use_edge_refiner = use_edge_refiner
 
-        # 0) input
+        # 0) input adapter (MODULE, used in forward)
         self.g2r = GrayToRGB()  # 1→3
 
         # 1) encoder (timm)
-        self.encoder = create_model(encoder_name, pretrained=True, features_only=True, out_indices=(0,1,2,3))
+        self.encoder = create_model(encoder_name, pretrained=True, features_only=True, out_indices=(0, 1, 2, 3))
         C1, C2, C3, C4 = self.encoder.feature_info.channels()
 
-        # 2) DPCN (optional) fused into s1
+        # 2) shallow DPCN fusion
         self.use_dpcn = use_dpcn
         if use_dpcn:
             self.dpcn   = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
@@ -129,12 +122,12 @@ class MATHFI_TimmEncoder_SPE(nn.Module):
             self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)
 
         # 3) bottleneck
-        self.bottleneck = ConvBlock(C4, C4*2)
+        self.bottleneck = ConvBlock(C4, C4 * 2)
         B = C4 * 2
 
         # 4) decoder widths
         d1_ch, d2_ch, d3_ch, d4_ch = C4, C3, C2, C1
-        self.d1 = DecoderBlock(B,    d1_ch)
+        self.d1 = DecoderBlock(B,     d1_ch)
         self.d2 = DecoderBlock(d1_ch, d2_ch)
         self.d3 = DecoderBlock(d2_ch, d3_ch)
         self.d4 = DecoderBlock(d3_ch, d4_ch)
@@ -149,9 +142,9 @@ class MATHFI_TimmEncoder_SPE(nn.Module):
 
         # Step D projections
         self.proj_d1 = nn.Conv2d(C4, d1_ch, 1, bias=True) if C4 != d1_ch else nn.Identity()
-        self.proj_d2 = nn.Conv2d(2*C3, d2_ch, 1, bias=True)
-        self.proj_d3 = nn.Conv2d(3*C2, d3_ch, 1, bias=True)
-        self.proj_d4 = nn.Conv2d(4*C1, d4_ch, 1, bias=True)
+        self.proj_d2 = nn.Conv2d(2 * C3, d2_ch, 1, bias=True)
+        self.proj_d3 = nn.Conv2d(3 * C2, d3_ch, 1, bias=True)
+        self.proj_d4 = nn.Conv2d(4 * C1, d4_ch, 1, bias=True)
 
         # 6) HAS
         self.has = HASSkip(
@@ -160,39 +153,38 @@ class MATHFI_TimmEncoder_SPE(nn.Module):
             Cdec_list=(B, d1_ch, d2_ch, d3_ch)
         )
 
-        # 7) ASFG gates — nudge priors at fine scales to prefer HAS
+        # 7) ASFG gates — tweak priors to prefer HAS downstream
         self.asfg_d1 = AdaptiveSelectiveFusionGate(channels=d1_ch, reduction=cbam_reduction,
                                                    use_spatial_cbam=False, tau=1.8,
                                                    prior_logits=(+0.7, +0.2, -0.3),
                                                    edge_boost_gain=0.5, agree_boost_gain=0.3)
         self.asfg_d2 = AdaptiveSelectiveFusionGate(channels=d2_ch, reduction=cbam_reduction,
                                                    use_spatial_cbam=False, tau=1.6,
-                                                   prior_logits=(+0.3, +0.3, -0.1),  # ↓MSU bias a bit
+                                                   prior_logits=(+0.3, +0.3, -0.1),
                                                    edge_boost_gain=0.4, agree_boost_gain=0.3)
         self.asfg_d3 = AdaptiveSelectiveFusionGate(channels=d3_ch, reduction=cbam_reduction,
                                                    use_spatial_cbam=False, tau=1.4,
-                                                   prior_logits=(0.0, +0.35, +0.05), # favor HAS slightly
+                                                   prior_logits=(0.0, +0.35, +0.05),
                                                    edge_boost_gain=0.3, agree_boost_gain=0.35)
         self.asfg_d4 = AdaptiveSelectiveFusionGate(channels=d4_ch, reduction=cbam_reduction,
                                                    use_spatial_cbam=True, tau=1.25,
-                                                   prior_logits=(-0.5, +0.25, +0.95), # strong fine-scale background clean-up
+                                                   prior_logits=(-0.5, +0.25, +0.95),
                                                    edge_boost_gain=0.0, agree_boost_gain=0.55)
 
         # 8) final head + optional edge-aware refiner
         self.final = nn.Conv2d(d4_ch, 1, kernel_size=1)
         if self.use_edge_refiner:
-            # use d3 as the "fine decoder cue" (richer than d4 skip context)
             self.edge_refiner = EdgeAwareRefiner(dec_ch=d3_ch, k_dw=5, tau=6.0)
 
     def forward(self, x1chw):
         # encoder
-        x3 = GrayToRGB()(x1chw)
+        x3 = self.g2r(x1chw)                       # use module (AMP-safe)
         s1, s2, s3, s4 = self.encoder(x3)
 
-        # shallow DPCN fuse
+        # shallow DPCN fuse (use module created in __init__)
         if self.use_dpcn:
-            dpcn_feat = self.dpcn(x1chw)  # [N, C_dpcn, H, W] (aggregate='mean')
-            s1 = FuseCat1x1(inA=s1.shape[1], inB=dpcn_feat.shape[1], out_ch=s1.shape[1]).to(s1.device)(s1, dpcn_feat)
+            dpcn_feat = self.dpcn(x1chw)           # [N, C_dpcn, H, W]
+            s1 = self.fuse_c1(s1, dpcn_feat)       # channels remain C1
 
         # bottleneck
         b = self.bottleneck(s4)
