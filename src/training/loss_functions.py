@@ -120,3 +120,34 @@ class DiceBCEComplementLoss(nn.Module):
             return loss_per_sample.sum()
         else:
             return loss_per_sample  # 'none'
+
+
+class TverskyLoss(nn.Module):
+    """
+    Tversky Loss — balances FP and FN penalties.
+    alpha → weight for false positives
+    beta  → weight for false negatives
+    """
+    def __init__(self, alpha=0.5, beta=0.5, smooth=1e-6, reduction="mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.smooth = smooth
+        self.reduction = reduction
+
+    def forward(self, y_pred, y_true):
+        y_pred = torch.sigmoid(y_pred)
+        y_true = y_true.float()
+
+        TP = (y_true * y_pred).sum(dim=(1, 2, 3))
+        FP = ((1 - y_true) * y_pred).sum(dim=(1, 2, 3))
+        FN = (y_true * (1 - y_pred)).sum(dim=(1, 2, 3))
+
+        tversky = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
+        loss = 1 - tversky
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        return loss
