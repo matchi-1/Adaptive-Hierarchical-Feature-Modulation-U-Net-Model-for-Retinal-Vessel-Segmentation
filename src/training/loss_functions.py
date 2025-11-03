@@ -188,3 +188,19 @@ class HybridTverskyDiceBCELoss(nn.Module):
         lt = self.tversky(logits, target)
         ld = self.dicebce(logits, target)
         return self.tversky_weight * lt + self.dicebce_weight * ld
+    
+
+class EdgeSobelLoss(nn.Module):
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        kx = torch.tensor([[-1,0,1],[-2,0,2],[-1,0,1]], dtype=torch.float32).view(1,1,3,3)
+        ky = torch.tensor([[-1,-2,-1],[0,0,0],[1,2,1]], dtype=torch.float32).view(1,1,3,3)
+        self.register_buffer("kx", kx); self.register_buffer("ky", ky)
+        self.reduction = reduction
+    def forward(self, y_pred, y_true):
+        p = torch.sigmoid(y_pred)
+        gx = F.conv2d(p, self.kx, padding=1)
+        gy = F.conv2d(p, self.ky, padding=1)
+        # encourage sparse/clean edges (L1)
+        loss = (gx.abs() + gy.abs()).mean(dim=(1,2,3))
+        return loss.mean() if self.reduction=="mean" else loss.sum()
