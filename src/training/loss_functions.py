@@ -164,3 +164,27 @@ class FocalTverskyLoss(TverskyLoss):
     def forward(self, y_pred, y_true):
         base_loss = super().forward(y_pred, y_true)
         return base_loss.pow(self.gamma)
+
+
+class HybridTverskyDiceBCELoss(nn.Module):
+    def __init__(self, *, 
+                 tversky_alpha=0.75, tversky_beta=0.25, tversky_weight=0.5,
+                 dice_weight=0.5, bce_weight=0.5, dicebce_weight=0.5,
+                 w0=1.0, w1=1.0, reduction="mean"):
+        super().__init__()
+        self.tversky = TverskyLoss(alpha=tversky_alpha, beta=tversky_beta, reduction=reduction)
+        self.dicebce = DiceBCEComplementLoss(
+            w0=w0, w1=w1,
+            dice_weight=dice_weight,
+            bce_weight=bce_weight,
+            exact_equation=False,
+            reduction=reduction,
+        )
+        self.tversky_weight  = float(tversky_weight)
+        self.dicebce_weight  = float(dicebce_weight)
+
+    def forward(self, logits, target):
+        # NOTE: Both of component losses expect LOGITS (not probs).
+        lt = self.tversky(logits, target)
+        ld = self.dicebce(logits, target)
+        return self.tversky_weight * lt + self.dicebce_weight * ld
