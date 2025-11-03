@@ -151,3 +151,16 @@ class TverskyLoss(nn.Module):
         elif self.reduction == "sum":
             return loss.sum()
         return loss
+
+
+class FocalTverskyLoss(TverskyLoss):
+    """
+    Focal-Tversky Loss — focuses on hard examples by adding a gamma exponent.
+    """
+    def __init__(self, alpha=0.5, beta=0.5, gamma=1.0, smooth=1e-6, reduction="mean"):
+        super().__init__(alpha=alpha, beta=beta, smooth=smooth, reduction=reduction)
+        self.gamma = gamma
+
+    def forward(self, y_pred, y_true):
+        base_loss = super().forward(y_pred, y_true)
+        return base_loss.pow(self.gamma)
