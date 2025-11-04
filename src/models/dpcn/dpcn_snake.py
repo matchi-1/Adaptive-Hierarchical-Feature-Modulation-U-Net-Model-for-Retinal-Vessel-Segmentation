@@ -73,11 +73,13 @@ class DPCNIter(nn.Module):
         norm_on_L: Literal["instance", "batch", "none"] = "instance",
         smooth_E: bool = True,
         use_deformable: Optional[bool] = None,
+        conv_type: Literal["deform", "snake", "plain"] = "deform",   # <--- NEW
     ):
         super().__init__()
         self.channels = int(channels)
         self.threshold_mode = threshold_mode.lower()
         self.smooth_E = bool(smooth_E)
+        self.conv_type = conv_type
 
         # Decide deformable availability
         if use_deformable is None:
