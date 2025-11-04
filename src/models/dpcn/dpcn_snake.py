@@ -15,6 +15,8 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from src.models.dsconv.dsconv_snake import SnakeLinkConv
+
 
 try:
     from torchvision.ops import deform_conv2d as _deform_conv2d
@@ -81,13 +83,32 @@ class DPCNIter(nn.Module):
         self.smooth_E = bool(smooth_E)
         self.conv_type = conv_type
 
-        # Decide deformable availability
-        if use_deformable is None:
-            self.use_deformable = _HAS_DEFORM
+        if self.conv_type == "snake":
+            # dynamic snake conv, same in/out channels
+            self.snake = SnakeLinkConv(channels, kernel_size=3, extend_scope=1.0, if_offset=True)
         else:
-            self.use_deformable = bool(use_deformable and _HAS_DEFORM)
-        if not self.use_deformable:
-            warnings.warn("[DPCNIter] deform_conv2d not available → using plain 3×3 Conv as fallback.", RuntimeWarning)
+            # original deformable / plain 3x3 conv path
+            if use_deformable is None:
+                self.use_deformable = _HAS_DEFORM
+            else:
+                self.use_deformable = bool(use_deformable and _HAS_DEFORM)
+            if not self.use_deformable and self.conv_type == "deform":
+                warnings.warn(
+                    "[DPCNIter] deform_conv2d not available → using plain 3×3 Conv as fallback.",
+                    RuntimeWarning
+                )
+
+            k = 3
+            off_ch = 2 * k * k
+            self.offset_conv = nn.Conv2d(channels, off_ch, kernel_size=3, padding=1)
+            nn.init.zeros_(self.offset_conv.weight)
+            nn.init.zeros_(self.offset_conv.bias)
+
+            w = torch.empty(channels, channels, k, k)
+            nn.init.kaiming_normal_(w, nonlinearity="relu")
+            self.weight = nn.Parameter(w)
+            self.bias   = nn.Parameter(torch.zeros(channels))
+
 
         # ---- Learnable scalars with safe re-parameterizations ----
         # raw params (unconstrained); mapped in forward:
@@ -97,19 +118,6 @@ class DPCNIter(nn.Module):
         self.b_raw = nn.Parameter(torch.tensor(float(beta_init)))
         self.a_raw = nn.Parameter(torch.tensor(float(aE_init)))
         self.v_raw = nn.Parameter(torch.tensor(float(V_E_init)))
-
-        # ---- Offsets for deformable conv (predicted from Y(n-1)) ----
-        k = 3
-        off_ch = 2 * k * k   # (dy, dx) per tap
-        self.offset_conv = nn.Conv2d(channels, off_ch, kernel_size=3, padding=1)
-        nn.init.zeros_(self.offset_conv.weight)
-        nn.init.zeros_(self.offset_conv.bias)
-
-        # ---- Kernel weights for the (deformable) conv ----
-        w = torch.empty(channels, channels, k, k)
-        nn.init.kaiming_normal_(w, nonlinearity="relu")
-        self.weight = nn.Parameter(w)
-        self.bias   = nn.Parameter(torch.zeros(channels))
 
         # ---- Normalization on L ----
         if norm_on_L == "instance":
@@ -148,18 +156,20 @@ class DPCNIter(nn.Module):
         Vconf: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # 1) Coupled Linking
-        if self.use_deformable:
-            offsets = self.offset_conv(y_prev)  # [N,18,H,W]
-            L = _deform_conv2d(
-                input=y_prev,
-                offset=offsets,
-                weight=self.weight,
-                bias=self.bias,
-                stride=1, padding=1, dilation=1, mask=None
-            )
+        if self.conv_type == "snake":
+            L = self.snake(y_prev)  # [N, C, H, W]
         else:
-            # fallback: plain conv
-            L = F.conv2d(y_prev, self.weight, self.bias, stride=1, padding=1, dilation=1)
+            if self.use_deformable:
+                offsets = self.offset_conv(y_prev)  # [N,18,H,W]
+                L = _deform_conv2d(
+                    input=y_prev,
+                    offset=offsets,
+                    weight=self.weight,
+                    bias=self.bias,
+                    stride=1, padding=1, dilation=1, mask=None
+                )
+            else:
+                L = F.conv2d(y_prev, self.weight, self.bias, stride=1, padding=1, dilation=1)
 
         L = self.norm_L(L)
 
@@ -217,6 +227,7 @@ class DPCN(nn.Module):
       aggregate:        "stack"(default), "last", "mean", "max"
       vconf_from:       "x" (raw input) or "F" (projected features) for confidence branch
       use_deformable:   force enable/disable deformable conv (None=auto)
+      conv_type:        choose from "deform", "snake", "plain"
     """
 
     def __init__(
@@ -235,6 +246,7 @@ class DPCN(nn.Module):
         aggregate: Literal["stack", "last", "mean", "max"] = "stack",
         vconf_from: Literal["x", "F"] = "x",
         use_deformable: Optional[bool] = None,
+        conv_type: Literal["deform", "snake", "plain"] = "snake",  # <--- NEW
     ):
         super().__init__()
         channels = channels or in_ch
@@ -245,6 +257,7 @@ class DPCN(nn.Module):
         self.threshold_mode = threshold_mode.lower()
         self.aggregate_mode = aggregate
         self.vconf_from = vconf_from
+        self.conv_type = conv_type
 
         # aE from half-life (iterations): aE = ln(2)/h
         if half_life <= 0:
@@ -276,6 +289,7 @@ class DPCN(nn.Module):
             norm_on_L=norm_on_L,
             smooth_E=smooth_E,
             use_deformable=use_deformable,
+            conv_type=conv_type,
         )
 
     @torch.no_grad()
