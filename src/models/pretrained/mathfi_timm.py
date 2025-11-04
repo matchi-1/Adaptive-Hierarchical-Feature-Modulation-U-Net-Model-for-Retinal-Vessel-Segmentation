@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm import create_model
 
-from src.models.dpcn.dpcn_v2 import DPCN
-from src.models.dpcn.dpcn_snake import DPCN_SNAKE
+#from src.models.dpcn.dpcn_v2 import DPCN
+from src.models.dpcn.dpcn_snake import DPCN
 from src.models.blocks.msu import MSU
 from src.models.blocks.cbam import CBAM
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import HASSkip, AdaptiveSelectiveFusionGate  
@@ -54,22 +54,24 @@ class MATHFI_TimmEncoder(nn.Module):
         enc_chs = self.encoder.feature_info.channels()  # e.g., [64, 256, 512, 1024]
         C1, C2, C3, C4 = enc_chs
 
-        # === 2) Optional DPCN-VAT on shallowest stage ===
+       # === 2) Optional DPCN-VAT on shallowest stage ===
         self.use_dpcn = use_dpcn
         if use_dpcn:
-            if use_dpcn_snake:
-                self.dpcn = DPCN_SNAKE( in_ch=1,
-                                        channels=dpcn_ch,
-                                        iters=dpcn_iters,
-                                        threshold_mode="scaled_vat",
-                                        half_life=2.0,
-                                        aggregate="mean",
-                                        conv_type="snake",     # ← use Dynamic Snake Conv inside DPCN
-                                        use_deformable=False,)  
-            else:
-                self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
-                                 threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
+            # Single DPCN class, pick behavior via conv_type
+            self.dpcn = DPCN(
+                in_ch=1,
+                channels=dpcn_ch,
+                iters=dpcn_iters,
+                threshold_mode="scaled_vat",
+                half_life=2.0,
+                aggregate="mean",
+                conv_type="snake" if use_dpcn_snake else "deform",
+                use_deformable=not use_dpcn_snake,  # if your DPCN still supports this flag
+            )
+            # run DPCN on raw input and fuse into C1
             self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
+
+
 
         # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like your UNet ===
         self.bottleneck = ConvBlock(C4, C4*2)  # like your 512→1024; adjust if needed
