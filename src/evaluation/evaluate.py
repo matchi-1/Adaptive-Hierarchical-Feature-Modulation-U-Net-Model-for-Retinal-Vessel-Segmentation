@@ -108,10 +108,16 @@ def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, com
         imgs = batch["image"].to(device)     # [B,1,H,W] inputs on target device
         gts  = batch["mask"]                 # [B,1,H,W] GT kept on CPU side for metrics
 
-        # Forward pass: get logits (may be tensor or list/tuple)
-        logits = model(imgs)                # [B,1,H,W] or [B,2,H,W] (or list/tuple)
+        # Forward pass: get logits (may be dict, tensor, or list/tuple)
+        out = model(imgs)
 
-        # If model returns multiple outputs, use the last one (common practice)
+        # If model returns a dict (e.g., {"logits", "edge_logits", "skel_logits"})
+        if isinstance(out, dict):
+            logits = out["logits"]
+        else:
+            logits = out
+
+        # If model returns multiple outputs, use the last one
         if isinstance(logits, (list, tuple)):
             logits = logits[-1]
 
@@ -334,10 +340,16 @@ def evaluate_models_table(
             fovs = batch.get(fov_key, None)
 
             # Forward
-            logits = mdl(imgs)
-            
+            out = mdl(imgs)
+
+            if isinstance(out, dict):
+                logits = out["logits"]
+            else:
+                logits = out
+
             if isinstance(logits, (list, tuple)):
                 logits = logits[-1]
+
 
             # Convert to probs in [0,1]
             if logits.ndim == 4 and logits.shape[1] == 2:
