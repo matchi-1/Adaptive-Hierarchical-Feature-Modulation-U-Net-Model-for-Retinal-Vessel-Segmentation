@@ -32,7 +32,7 @@ class MATHFI_TimmEncoder_Refined(nn.Module):
                  dpcn_iters=6,
                  cbam_reduction=16):
         super().__init__()
-        self.g2r = GrayToRGB()
+        self.g2r = GrayToRGB()  
         self.encoder = create_model(encoder_name, pretrained=True, features_only=True, out_indices=(0,1,2,3))
         C1, C2, C3, C4 = self.encoder.feature_info.channels()
 
@@ -50,12 +50,13 @@ class MATHFI_TimmEncoder_Refined(nn.Module):
         self.d3 = DecoderBlock(d2_ch, d3_ch)
         self.d4 = DecoderBlock(d3_ch, d4_ch)
 
-        self.msu_A12 = MSU(C1, C1)
-        self.msu_A23 = MSU(C2, C2)
-        self.msu_A34 = MSU(C3, C3)
-        self.msu_P12_23 = MSU(C1, C1)
-        self.msu_P23_34 = MSU(C2, C2)
-        self.msu_Qlast = MSU(C1, C1)
+        self.msu_A12 = MSU(C1, C1)          # 64 → 64
+        self.msu_A23 = MSU(C2, C2)          # 256 → 256
+        self.msu_A34 = MSU(C3, C3)          # 512 → 512
+        self.msu_P12_23 = MSU(C1, C1)       # 64 → 64
+        self.msu_P23_34 = MSU(C2, C2)       # 256 → 256
+        self.msu_Qlast = MSU(C1, C1)        # 64 → 64
+
 
         self.proj_d1 = nn.Conv2d(C4, d1_ch, 1) if C4 != d1_ch else nn.Identity()
         self.proj_d2 = nn.Conv2d(2 * C3, d2_ch, 1)
