@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from timm import create_model
 
 from src.models.dpcn.dpcn_v2 import DPCN
+from src.models.dpcn.dpcn_snake import DPCN_SNAKE
 from src.models.blocks.msu import MSU
 from src.models.blocks.cbam import CBAM
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import HASSkip, AdaptiveSelectiveFusionGate  
@@ -38,7 +39,8 @@ class MATHFI_TimmEncoder(nn.Module):
     def __init__(self,
                  encoder_name: str = "res2net50_26w_4s",
                  use_dpcn: bool = True,
-                 dpcn_ch: int = 32, dpcn_iters: int = 4,
+                 use_dpcn_snake: bool = False,
+                 dpcn_ch: int = 64, dpcn_iters: int = 6,
                  cbam_reduction: int = 16):
         super().__init__()
 
@@ -55,9 +57,18 @@ class MATHFI_TimmEncoder(nn.Module):
         # === 2) Optional DPCN-VAT on shallowest stage ===
         self.use_dpcn = use_dpcn
         if use_dpcn:
-            # run DPCN on raw input and fuse into C1
-            self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
-                             threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
+            if use_dpcn_snake:
+                self.dpcn = DPCN_SNAKE( in_ch=1,
+                                        channels=dpcn_ch,
+                                        iters=dpcn_iters,
+                                        threshold_mode="scaled_vat",
+                                        half_life=2.0,
+                                        aggregate="mean",
+                                        conv_type="snake",     # ← use Dynamic Snake Conv inside DPCN
+                                        use_deformable=False,)  
+            else:
+                self.dpcn = DPCN(in_ch=1, channels=dpcn_ch, iters=dpcn_iters,
+                                 threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
             self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
 
         # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like your UNet ===
