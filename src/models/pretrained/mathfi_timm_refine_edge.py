@@ -117,10 +117,9 @@ class MATHFI_TimmEncoder(nn.Module):
                              threshold_mode="scaled_vat", half_life=2.0, aggregate="mean")
             self.fuse_c1 = FuseCat1x1(inA=C1, inB=dpcn_ch, out_ch=C1)  # keep channel count stable
 
-        # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like your UNet ===
+        # === 3) Bottleneck mock (we’ll use encoder C4 as "p4"); create a "bottleneck" conv like UNet ===
         self.bottleneck = ConvBlock(C4, C4*2)  # like your 512→1024; adjust if needed
         B = C4*2  # bottleneck channels
-        self.msu_top = AlignMSU(inA=C4, inB=B, out_ch=d1_ch)  # C4 vs bottleneck B
 
         # === 4) Decoder path widths (mirror your UNet) ===
         # D1 expects 512-like width, etc. We'll map from encoder channels.
@@ -130,6 +129,9 @@ class MATHFI_TimmEncoder(nn.Module):
         self.d3 = DecoderBlock(d2_ch, d3_ch)
         self.d4 = DecoderBlock(d3_ch, d4_ch)
 
+        # MSU at coarsest decoder (use difference between deepest encoder and bottleneck)
+        self.msu_top = AlignMSU(inA=C4, inB=B, out_ch=d1_ch)  # C4 vs bottleneck B
+        
         # === 5) MSU graph (use encoder widths) ===
         # ==== MSU chain per paper (A, P, Q) ====
         # A* must output at the spatial size of the first arg (inA)
