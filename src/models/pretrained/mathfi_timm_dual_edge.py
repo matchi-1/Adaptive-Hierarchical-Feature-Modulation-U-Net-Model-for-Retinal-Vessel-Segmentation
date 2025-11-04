@@ -25,7 +25,12 @@ class SmallRefineNet(nn.Module):
         return self.out(x)
 
 class MATHFI_TimmEncoder_Refined(nn.Module):
-    def __init__(self, encoder_name='res2net50_26w_4s', use_dpcn=True, dpcn_ch=64, dpcn_iters=6, cbam_reduction=16):
+    def __init__(self,
+                 encoder_name='res2net50_26w_4s',
+                 use_dpcn=True,
+                 dpcn_ch=64, 
+                 dpcn_iters=6,
+                 cbam_reduction=16):
         super().__init__()
         self.g2r = GrayToRGB()
         self.encoder = create_model(encoder_name, pretrained=True, features_only=True, out_indices=(0,1,2,3))
