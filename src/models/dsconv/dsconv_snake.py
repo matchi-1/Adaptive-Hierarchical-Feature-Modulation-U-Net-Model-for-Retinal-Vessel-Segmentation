@@ -378,3 +378,44 @@ class DSC(object):
 #     out = conv0(A)
 #     print(out.shape)
 #     print(out)
+
+
+
+class SnakeLinkConv(nn.Module):
+    """
+    Thin wrapper around official DSConv to behave like a standard conv:
+      in:  [B, C, H, W]
+      out: [B, C, H, W]  (same channels)
+    Uses two DSConvs (morph=0, morph=1) and averages their outputs.
+    """
+    def __init__(self, channels, kernel_size=3, extend_scope=1.0, if_offset=True):
+        super().__init__()
+        # note: we init with dummy device="cpu"; we’ll override per-forward
+        self.conv_x = DSConv(
+            in_ch=channels,
+            out_ch=channels,
+            kernel_size=kernel_size,
+            extend_scope=extend_scope,
+            morph=0,             # along x / “horizontal” snake
+            if_offset=if_offset,
+            device=torch.device("cpu"),
+        )
+        self.conv_y = DSConv(
+            in_ch=channels,
+            out_ch=channels,
+            kernel_size=kernel_size,
+            extend_scope=extend_scope,
+            morph=1,             # along y / “vertical” snake
+            if_offset=if_offset,
+            device=torch.device("cpu"),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # keep DSConv’s internal DSC on the same device as x
+        dev = x.device
+        self.conv_x.device = dev
+        self.conv_y.device = dev
+
+        out_x = self.conv_x(x)
+        out_y = self.conv_y(x)
+        return 0.5 * (out_x + out_y)
