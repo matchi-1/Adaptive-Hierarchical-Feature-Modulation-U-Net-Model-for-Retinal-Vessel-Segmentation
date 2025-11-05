@@ -253,26 +253,43 @@ class DPCNStackedInput_MATHFI_Timm(nn.Module):
         FMSU_d4  = self.proj_d4(torch.cat([A12_s1, P1223_s1, Qlast_s1, s1], dim=1))
 
         # 5) Decoder with HAS-Skip + ASFG
+        # Decoder L1 (coarsest)
         FSKIP_d1 = self.has.forward_level(0, [s1, s2, s3, s4], b,  s4)
         FB1      = self.asfg_d1(FMSU_d1, FSKIP_d1)
-        d1       = self.d1(b, FB1)
+        d1       = self.d1(b, FB1)     # [N,d1_ch, H/8,  W/8 ] or similar
 
+        # L2
         FSKIP_d2 = self.has.forward_level(1, [s1, s2, s3, s4], d1, s3)
         FB2      = self.asfg_d2(FMSU_d2, FSKIP_d2)
-        d2       = self.d2(d1, FB2)
+        d2       = self.d2(d1, FB2)    # [N,d2_ch, H/4,  W/4 ]
 
+        # L3
         FSKIP_d3 = self.has.forward_level(2, [s1, s2, s3, s4], d2, s2)
         FB3      = self.asfg_d3(FMSU_d3, FSKIP_d3)
-        d3       = self.d3(d2, FB3)
+        d3       = self.d3(d2, FB3)    # [N,d3_ch, H/2,  W/2 ]
 
+        # L4 (finest)
         FSKIP_d4 = self.has.forward_level(3, [s1, s2, s3, s4], d3, s1)
         FB4      = self.asfg_d4(FMSU_d4, FSKIP_d4)
-        d4       = self.d4(d3, FB4)
+        d4       = self.d4(d3, FB4)    # [N,d4_ch, H,    W   ]  (finest decoder feat)
 
-        logits = self.final(d4)
+        # --- M2-style multi-scale decoder fusion (right branch of the M) ---
+        target_hw = d4.shape[-2:]  # use finest decoder resolution as reference
 
-        # make sure logits align with input H×W
+        d1_up = F.interpolate(d1, size=target_hw, mode="bilinear", align_corners=False)
+        d2_up = F.interpolate(d2, size=target_hw, mode="bilinear", align_corners=False)
+        d3_up = F.interpolate(d3, size=target_hw, mode="bilinear", align_corners=False)
+        # d4 is already at target_hw
+
+        M_cat = torch.cat([d1_up, d2_up, d3_up, d4], dim=1)  # [N, d1+d2+d3+d4, H, W]
+
+        logits = self.final(M_cat)
+
+        # ensure logits match original input spatial size
         if logits.shape[-2:] != x1chw.shape[-2:]:
-            logits = F.interpolate(logits, size=x1chw.shape[-2:], mode="bilinear", align_corners=False)
+            logits = F.interpolate(
+                logits, size=x1chw.shape[-2:], mode="bilinear", align_corners=False
+            )
 
         return logits
+
