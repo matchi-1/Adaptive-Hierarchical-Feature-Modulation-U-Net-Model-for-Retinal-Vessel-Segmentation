@@ -173,7 +173,12 @@ class DPCNStackedInput_MATHFI_Timm(nn.Module):
         # -------------------------
         # 6) Final head
         # -------------------------
-        self.final = nn.Conv2d(d4_ch, 1, kernel_size=1)
+        # total channels after M-shaped fusion of all decoder levels
+        self.M_cat_ch = d1_ch + d2_ch + d3_ch + d4_ch
+        self.final = nn.Conv2d(self.M_cat_ch, 1, kernel_size=1)
+        # (we can try adding a small ConvBlock/CBAM here before the 1×1)
+
+
 
     def forward(self, x1chw: torch.Tensor, fov: torch.Tensor | None = None) -> torch.Tensor:
         """
