@@ -1,6 +1,7 @@
 venv/
 myenv/
 .env/
+venv312/
 
 *.pyc
 *.pyo
