@@ -81,3 +81,15 @@ def sweep_thresholds_on_val(model, loader, device="cuda", thresholds=None):
         })
 
     return results
+
+
+def pick_best_threshold(results, target_SEN=0.825, target_SPE=0.983, target_cld=0.8212):
+    candidates = [
+        r for r in results
+        if (r["SEN"] >= target_SEN and
+            r["SPE"] >= target_SPE and
+            r["clDice"] >= target_cld)
+    ]
+    if candidates:
+        return max(candidates, key=lambda r: r["clDice"])
+    return max(results, key=lambda r: (r["SEN"] + r["SPE"] - 1.0))
