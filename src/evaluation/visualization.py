@@ -94,7 +94,7 @@ def _to_hw_numpy_01(t: torch.Tensor) -> np.ndarray:
     return arr
 
 
-@torch.no_grad() # Disable gradient tracking (saves memory and speeds up inference)
+@torch.no_grad()
 def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
     """
     Run model prediction on a single 1xHxW image.
@@ -111,28 +111,39 @@ def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
             bin_np (np.ndarray): Binary mask (thresholded).
     """
     model.eval()
-    x = img_1hw.unsqueeze(0).to(device)  # Add batch → [1,1,H,W]
-    logits = model(x)
+    x = img_1hw.unsqueeze(0).to(device)  # [1,1,H,W]
+    out = model(x)
 
-    if isinstance(logits, (list, tuple)):
-        logits = logits[-1]  # Use last output if multiple
+    # --- NEW: handle dict / list / tensor outputs uniformly ---
+    if isinstance(out, dict):
+        # Prefer the main segmentation logits
+        if "logits" in out:
+            logits = out["logits"]
+        else:
+            # fallback: take the first value
+            logits = next(iter(out.values()))
+    elif isinstance(out, (list, tuple)):
+        logits = out[-1]           # use last output if multiple
+    else:
+        logits = out               # plain tensor case
 
     # Handle different output shapes
     if logits.ndim == 4:
-        if logits.shape[1] == 2:  # Two-class output
+        if logits.shape[1] == 2:   # Two-class output
             prob = torch.softmax(logits, dim=1)[:, 1, ...][0]
-        elif logits.shape[1] == 1:  # Single channel logits
+        elif logits.shape[1] == 1: # Single channel logits
             prob = torch.sigmoid(logits[:, 0, ...])[0]
-        else:  # Multi-class
+        else:                      # Multi-class
             prob = torch.softmax(logits, dim=1).max(dim=1).values[0]
-    elif logits.ndim == 3:  # [C,H,W]
+    elif logits.ndim == 3:         # [C,H,W]
         prob = torch.sigmoid(logits[0])
     else:
         raise ValueError(f"Unexpected model output shape: {tuple(logits.shape)}")
 
     prob_np = _to_hw_numpy_01(prob)
-    bin_np = (prob_np >= threshold).astype(np.float32)
+    bin_np  = (prob_np >= threshold).astype(np.float32)
     return prob_np, bin_np
+
 
 
 def visualize_samples(
