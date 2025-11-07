@@ -7,6 +7,8 @@ from src.models.dpcn.dpcn_v2 import DPCN
 from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import (
     UNetWithMSU_HASSkip_CBAM_ASFG
 )
+from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3_refine_edge import UNetWithMSU_HASSkip_CBAM_ASFG as UNetWithMSU_HASSkip_CBAM_ASFG_RefineEdge
+
 
 class DPCNConcatUNet(nn.Module):        # version 1
     """
@@ -36,7 +38,8 @@ class DPCNConcatUNet(nn.Module):        # version 1
                  threshold_mode: str = "scaled_vat",
                  half_life: float = 2.0,
                  reduce_to: int | None = None,
-                 base_kwargs: dict | None = None):
+                 base_kwargs: dict | None = None,
+                 refine_edge: bool = False):
         super().__init__()
         self.iters = int(iters)
         self.enh_channels = int(enh_channels)
@@ -60,7 +63,10 @@ class DPCNConcatUNet(nn.Module):        # version 1
 
         # 3) base model takes in_channels=in_ch_base; rest unchanged
         base_kwargs = base_kwargs or {}
-        self.base = UNetWithMSU_HASSkip_CBAM_ASFG(in_channels=in_ch_base, **base_kwargs)
+        if refine_edge:
+            self.base = UNetWithMSU_HASSkip_CBAM_ASFG_RefineEdge(in_channels=in_ch_base, **base_kwargs)
+        else:
+            self.base = UNetWithMSU_HASSkip_CBAM_ASFG(in_channels=in_ch_base, **base_kwargs)
 
     def forward(self, x: torch.Tensor, fov: torch.Tensor | None = None) -> torch.Tensor:
         # DPCN stack: [N, T, C, H, W]
