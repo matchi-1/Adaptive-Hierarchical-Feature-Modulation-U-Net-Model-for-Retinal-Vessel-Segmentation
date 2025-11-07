@@ -1,0 +1,304 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from timm import create_model
+
+from src.models.dpcn.dpcn_snake import DPCN           # <-- snake-aware DPCN
+from src.models.blocks.msu import MSU
+from src.models.blocks.cbam import CBAM
+from src.models.unet_exp.base_unet_ablations.base_unet_msu_cbam_hasskip_improved3 import (
+    HASSkip, AdaptiveSelectiveFusionGate
+)
+from src.models.unet import DecoderBlock, ConvBlock
+
+
+class FinalRefine(nn.Module):
+    """
+    Predicts skeleton & edge from decoder feat, then uses them to refine feat
+    before the final logits. Returns (seg_logits, edge_logits, skel_logits).
+    """
+    def __init__(self, in_ch: int, *, use_spatial_cbam: bool = True):
+        super().__init__()
+        self.skel_head = nn.Conv2d(in_ch, 1, kernel_size=1)   # centerline prior
+        self.edge_head = nn.Conv2d(in_ch, 1, kernel_size=1)   # boundary prior
+
+        # optional tiny CBAM to precision-filter fused feat
+        self.cbam = CBAM(in_ch, reduction_ratio=16, use_spatial=use_spatial_cbam)
+
+        # learnable gates that control how strongly aux maps steer features
+        self._alpha_skel = nn.Parameter(torch.tensor(0.75))   # boosts along centerlines
+        self._alpha_edge = nn.Parameter(torch.tensor(0.60))   # suppresses off-edge bleed
+
+        # fuse (feat + 2 aux channels) → refine
+        self.fuse = nn.Conv2d(in_ch + 2, in_ch, kernel_size=3, padding=1, bias=False)
+        self.norm = nn.GroupNorm(num_groups=min(32, in_ch), num_channels=in_ch)
+        self.act  = nn.ReLU(inplace=True)
+
+        # final segmentation head
+        self.out = nn.Conv2d(in_ch, 1, kernel_size=1)
+
+        # optional temperature head (logit calibration -> sharper boundaries)
+        self.temp = nn.Conv2d(in_ch, 1, kernel_size=1)
+
+    def forward(self, feat: torch.Tensor):
+        skel_logit = self.skel_head(feat)
+        edge_logit = self.edge_head(feat)
+        skel = torch.sigmoid(skel_logit)
+        edge = torch.sigmoid(edge_logit)
+
+        # centerline-attentive sharpening (thins vessels)
+        alpha_s = torch.sigmoid(self._alpha_skel)   # (0,1)
+        alpha_e = torch.sigmoid(self._alpha_edge)   # (0,1)
+        guided  = feat * (1.0 + alpha_s * skel) * (1.0 - 0.5 * alpha_e * edge)
+
+        # concatenate aux priors and re-filter
+        fused = torch.cat([guided, skel, edge], dim=1)
+        fused = self.fuse(fused)
+        fused = self.norm(fused)
+        fused = self.act(self.cbam(fused))
+
+        seg_logit = self.out(fused)
+
+        # per-pixel temperature (keeps confidence in check near edges)
+        scale = 1.0 + F.softplus(self.temp(fused)) * (1.0 - edge)
+        seg_logit = seg_logit / scale.clamp_min(1e-3)
+
+        return seg_logit, edge_logit, skel_logit
+
+class AlignMSU(nn.Module):
+    """Align then MSU (compatible with AlignMSU)."""
+    def __init__(self, inA, inB, out_ch, use_bn=True, activation=True):
+        super().__init__()
+        self.projA = nn.Conv2d(inA, out_ch, 1, bias=True)
+        self.projB = nn.Conv2d(inB, out_ch, 1, bias=True)
+        self.msu   = MSU(in_channels=out_ch, out_channels=out_ch, use_bn=use_bn, activation=activation)
+
+    def forward(self, A, B):
+        A_ = self.projA(A)
+        B_ = self.projB(B)
+        if B_.shape[-2:] != A_.shape[-2:]:
+            B_ = F.interpolate(B_, size=A_.shape[-2:], mode='bilinear', align_corners=False)
+        return self.msu(A_, B_)
+
+
+def _resize_like(x, ref):
+    if x.shape[-2:] != ref.shape[-2:]:
+        x = F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
+    return x
+
+
+class DPCNStackedInput_MATHFI_Timm(nn.Module):
+    """
+    DPCN-front MATHFI with refine-edge head.
+
+        x [N,1,H,W]
+          └─ DPCN (aggregate='stack') → ys [N,T,Cd,H,W]
+               → reshape [N, T*Cd, H, W]
+               → 1x1 stem → [N,3,H,W]
+               └─ timm encoder (pretrained, in_chans=3)
+                    → MSU + HAS-Skip + ASFG + decoder
+                    → FinalRefine(d4) → dict:
+                        {"logits", "edge_logits", "skel_logits"}
+    """
+
+    def __init__(
+        self,
+        encoder_name: str = "res2net50_26w_4s",
+        in_ch: int = 1,                 # image channels
+        dpcn_channels: int = 32,        # DPCN internal channels (Cd)
+        dpcn_iters: int = 4,            # DPCN iterations (T)
+        dpcn_threshold_mode: str = "scaled_vat",
+        dpcn_half_life: float = 2.0,
+        dpcn_conv_type: str = "deform", # "deform" | "snake"
+        dpcn_use_deformable: bool | None = None,
+        cbam_reduction: int = 16,
+    ):
+        super().__init__()
+
+        self.T  = int(dpcn_iters)
+        self.Cd = int(dpcn_channels)
+
+        # -------------------------
+        # 1) DPCN front-end (stack)
+        # -------------------------
+        self.dpcn = DPCN(
+            in_ch=in_ch,
+            channels=self.Cd,
+            iters=self.T,
+            threshold_mode=dpcn_threshold_mode,
+            half_life=dpcn_half_life,
+            aggregate="stack",        # <--- KEEP ALL ITERATIONS
+            conv_type=dpcn_conv_type,
+            use_deformable=dpcn_use_deformable,
+        )
+
+        in_ch_dpcn = self.T * self.Cd  # after concatenation
+
+        # Reduce DPCN stack to 3 channels (pseudo-RGB for timm)
+        self.dpcn_stem = nn.Conv2d(in_ch_dpcn, 3, kernel_size=1, bias=True)
+
+        # -------------------------
+        # 2) timm encoder (pretrained)
+        # -------------------------
+        self.encoder = create_model(
+            encoder_name,
+            pretrained=True,
+            features_only=True,
+            out_indices=(0, 1, 2, 3),
+            in_chans=3,
+        )
+        enc_chs = self.encoder.feature_info.channels()   # e.g. [64,256,512,1024]
+        C1, C2, C3, C4 = enc_chs
+
+        # -------------------------
+        # 3) Bottleneck + decoder
+        # -------------------------
+        self.bottleneck = ConvBlock(C4, C4 * 2)  # 512→1024
+        B = C4 * 2
+
+        d1_ch, d2_ch, d3_ch, d4_ch = C4, C3, C2, C1  # coarse→fine
+        self.d1 = DecoderBlock(B,    d1_ch)
+        self.d2 = DecoderBlock(d1_ch, d2_ch)
+        self.d3 = DecoderBlock(d2_ch, d3_ch)
+        self.d4 = DecoderBlock(d3_ch, d4_ch)
+
+        # -------------------------
+        # 4) MSU graph
+        # -------------------------
+        # refine version: MSU at coarsest (s4 vs bottleneck)
+        self.msu_top   = AlignMSU(inA=C4, inB=B,  out_ch=d1_ch)
+        self.msu_A12   = AlignMSU(inA=C1, inB=C2, out_ch=C1)
+        self.msu_A23   = AlignMSU(inA=C2, inB=C3, out_ch=C2)
+        self.msu_A34   = AlignMSU(inA=C3, inB=C4, out_ch=C3)
+
+        self.msu_P12_23 = AlignMSU(inA=C1, inB=C2, out_ch=C1)
+        self.msu_P23_34 = AlignMSU(inA=C2, inB=C3, out_ch=C2)
+        self.msu_Qlast  = AlignMSU(inA=C1, inB=C2, out_ch=C1)
+
+        self.proj_d1 = nn.Conv2d(C4, d1_ch, kernel_size=1, bias=True) if C4 != d1_ch else nn.Identity()
+        self.proj_d2 = nn.Conv2d(2 * C3, d2_ch, kernel_size=1, bias=True)
+        self.proj_d3 = nn.Conv2d(3 * C2, d3_ch, kernel_size=1, bias=True)
+        self.proj_d4 = nn.Conv2d(4 * C1, d4_ch, kernel_size=1, bias=True)
+
+        # -------------------------
+        # 5) HAS-Skip + ASFG
+        # -------------------------
+        self.has = HASSkip(
+            Cin_list=(C1, C2, C3, C4),
+            Cout_list=(d1_ch, d2_ch, d3_ch, d4_ch),
+            Cdec_list=(B, d1_ch, d2_ch, d3_ch),
+        )
+
+        self.asfg_d1 = AdaptiveSelectiveFusionGate(
+            channels=d1_ch, reduction=cbam_reduction,
+            use_spatial_cbam=False, tau=1.8,
+            prior_logits=(+0.7, +0.2, -0.3),
+            edge_boost_gain=0.5, agree_boost_gain=0.3,
+        )
+        self.asfg_d2 = AdaptiveSelectiveFusionGate(
+            channels=d2_ch, reduction=cbam_reduction,
+            use_spatial_cbam=False, tau=1.6,
+            prior_logits=(+0.4, +0.2,  0.0),
+            edge_boost_gain=0.4, agree_boost_gain=0.3,
+        )
+        self.asfg_d3 = AdaptiveSelectiveFusionGate(
+            channels=d3_ch, reduction=cbam_reduction,
+            use_spatial_cbam=False, tau=1.4,
+            prior_logits=(+0.1, +0.3, +0.1),
+            edge_boost_gain=0.3, agree_boost_gain=0.35,
+        )
+        self.asfg_d4 = AdaptiveSelectiveFusionGate(
+            channels=d4_ch, reduction=cbam_reduction,
+            use_spatial_cbam=True, tau=1.2,
+            prior_logits=(-0.2, +0.2, +0.7),
+            edge_boost_gain=0.0, agree_boost_gain=0.5,
+        )
+
+        # -------------------------
+        # 6) Final refine head (edge + skeleton)
+        # -------------------------
+        # self.final = nn.Conv2d(d4_ch, 1, kernel_size=1)
+        self.refine = FinalRefine(d4_ch, use_spatial_cbam=True)
+
+    def forward(self, x1chw: torch.Tensor, fov: torch.Tensor | None = None):
+        """
+        x1chw: [N,1,H,W] raw image
+        fov:   [N,1,H,W] optional mask passed to DPCN
+        """
+
+        # 1) DPCN front-end: [N, T, Cd, H, W]
+        ys = self.dpcn(x1chw, fov=fov)
+
+        if ys.dim() != 5:
+            raise RuntimeError(f"DPCN with aggregate='stack' must return 5-D, got {ys.shape}")
+
+        N, T, C, H, W = ys.shape
+        assert T == self.T and C == self.Cd, f"Unexpected DPCN shape: got T={T},C={C}, expected T={self.T},C={self.Cd}"
+
+        # concat iterations and channels → [N, T*Cd, H, W]
+        feats = ys.reshape(N, T * C, H, W)
+
+        # reduce to 3 channels (pseudo-RGB for timm)
+        x3chw = self.dpcn_stem(feats)   # [N,3,H,W]
+
+        # 2) timm encoder pyramid
+        s1, s2, s3, s4 = self.encoder(x3chw)  # [C1,C2,C3,C4]
+
+        # 3) bottleneck
+        b = self.bottleneck(s4)              # [N,B,H/16,W/16]
+
+        # 4) MSU graph
+        A12 = self.msu_A12(s1, s2)
+        A23 = self.msu_A23(s2, s3)
+        A34 = self.msu_A34(s3, s4)
+
+        P12_23 = self.msu_P12_23(A12, A23)
+        P23_34 = self.msu_P23_34(A23, A34)
+        Qlast  = self.msu_Qlast(P12_23, P23_34)
+
+        # coarsest MSU feature – use msu_top like in refine encoder version
+        FMSU_d1 = self.msu_top(s4, b)    # instead of proj_d1(s4)
+
+        A34_s3   = _resize_like(A34,    s3)
+        FMSU_d2  = self.proj_d2(torch.cat([A34_s3, s3], dim=1))
+
+        A23_s2   = _resize_like(A23,    s2)
+        P2334_s2 = _resize_like(P23_34, s2)
+        FMSU_d3  = self.proj_d3(torch.cat([A23_s2, P2334_s2, s2], dim=1))
+
+        A12_s1   = _resize_like(A12,    s1)
+        P1223_s1 = _resize_like(P12_23, s1)
+        Qlast_s1 = _resize_like(Qlast,  s1)
+        FMSU_d4  = self.proj_d4(torch.cat([A12_s1, P1223_s1, Qlast_s1, s1], dim=1))
+
+        # 5) Decoder with HAS-Skip + ASFG
+        FSKIP_d1 = self.has.forward_level(0, [s1, s2, s3, s4], b,  s4)
+        FB1      = self.asfg_d1(FMSU_d1, FSKIP_d1)
+        d1       = self.d1(b, FB1)
+
+        FSKIP_d2 = self.has.forward_level(1, [s1, s2, s3, s4], d1, s3)
+        FB2      = self.asfg_d2(FMSU_d2, FSKIP_d2)
+        d2       = self.d2(d1, FB2)
+
+        FSKIP_d3 = self.has.forward_level(2, [s1, s2, s3, s4], d2, s2)
+        FB3      = self.asfg_d3(FMSU_d3, FSKIP_d3)
+        d3       = self.d3(d2, FB3)
+
+        FSKIP_d4 = self.has.forward_level(3, [s1, s2, s3, s4], d3, s1)
+        FB4      = self.asfg_d4(FMSU_d4, FSKIP_d4)
+        d4       = self.d4(d3, FB4)
+
+        # 6) refine edge + skeleton
+        logits_refined, edge_logits, skel_logits = self.refine(d4)
+
+        # match input size
+        if logits_refined.shape[-2:] != x1chw.shape[-2:]:
+            logits_refined = F.interpolate(logits_refined, size=x1chw.shape[-2:], mode="bilinear", align_corners=False)
+            edge_logits    = F.interpolate(edge_logits,    size=x1chw.shape[-2:], mode="bilinear", align_corners=False)
+            skel_logits    = F.interpolate(skel_logits,    size=x1chw.shape[-2:], mode="bilinear", align_corners=False)
+
+        return {
+            "logits": logits_refined,
+            "edge_logits": edge_logits,
+            "skel_logits": skel_logits,
+        }
