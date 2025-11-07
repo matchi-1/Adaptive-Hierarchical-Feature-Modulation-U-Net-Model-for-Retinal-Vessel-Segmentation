@@ -23,10 +23,20 @@ def sweep_thresholds_on_val(model, loader, device="cuda", thresholds=None):
         fov  = batch.get("fov", None)
 
         with torch.amp.autocast(device_type="cuda", enabled=(device == "cuda")):
-            logits = model(imgs)
+            out = model(imgs)
 
-        if isinstance(logits, (list, tuple)):
-            logits = logits[-1]
+        # --- NEW: normalize model output into `logits` tensor ---
+        if isinstance(out, dict):
+            # prefer main segmentation logits if present
+            if "logits" in out:
+                logits = out["logits"]
+            else:
+                # fallback: first value in the dict
+                logits = next(iter(out.values()))
+        elif isinstance(out, (list, tuple)):
+            logits = out[-1]          # use last output if multiple
+        else:
+            logits = out              # plain tensor case
 
         if logits.ndim == 4 and logits.shape[1] == 2:
             probs = torch.softmax(logits, dim=1)[:, 1]
