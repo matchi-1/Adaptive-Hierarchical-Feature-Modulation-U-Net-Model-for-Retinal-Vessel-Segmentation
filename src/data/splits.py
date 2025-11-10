@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 from src.data.prepare_dataset import build_pairs_all, _natural_key
+from src.evaluation.visualization import _read_original_rgb
 from typing import List, Tuple
 
 
@@ -144,12 +145,28 @@ def split_stare_leave_one_out(
 
 # STARE leave one out (LOO) fold function
 def stare_loo_fold(dataset_root: str, label_folder: str = "1st_manual", fold_id: int = 0) -> Tuple[list, list]:
+    
+    import matplotlib.pyplot as plt
+    
     pairs = build_pairs_all(dataset_root, label_folder=label_folder)
     pairs = sorted(pairs, key=lambda p: _natural_key(Path(p[0])))
     assert len(pairs) == 20, f"Expected 20 STARE images, got {len(pairs)}"
     assert 0 <= fold_id < 20
     test_pairs  = [pairs[fold_id]]
     train_pairs = pairs[:fold_id] + pairs[fold_id+1:]
+
+    img_path = test_pairs[0][0]          # (image_path, label_path)
+    img = _read_original_rgb(img_path)           
+
+    plt.figure(figsize=(3,3))
+    if img.ndim == 2:                     # grayscale
+        plt.imshow(img, cmap='gray')
+    else:                                 # RGB
+        plt.imshow(img)
+    plt.title(f"STARE • fold {fold_id} • {Path(img_path).name}")
+    plt.axis('off')
+    plt.tight_layout()
+    plt.show()
     return train_pairs, test_pairs
 
 
@@ -198,3 +215,70 @@ def drive_random_20_20(dataset_root: str, label_folder: str = "1st_manual", seed
     train_pairs.sort(key=lambda t: _natural_key(Path(t[0])))
     test_pairs.sort(key=lambda t: _natural_key(Path(t[0])))
     return train_pairs, test_pairs
+
+
+
+import numpy as np
+from collections import defaultdict
+
+def weighted_sample_without_replacement(items, weights, k, rng: np.random.RandomState):
+    """Simple weighted sampling w/o replacement using numpy."""
+    items = np.array(items)
+    weights = np.array(weights, dtype=float)
+    chosen = []
+    for _ in range(k):
+        w = weights.copy()
+        w_sum = w.sum()
+        if w_sum <= 0:
+            # fall back to uniform if all weights are zero
+            w = np.ones_like(w) / len(w)
+        else:
+            w = w / w_sum
+        idx = rng.choice(len(items), p=w)
+        chosen.append(items[idx])
+        # remove this item or zero its weight
+        weights[idx] = 0.0
+    return chosen
+
+def chase_mc_balanced_splits(
+    dataset_root: str,
+    label_folder: str = "1st_manual",
+    n_runs: int = 5,
+    n_test_subjects: int = 4,
+    seed: int = 1337,
+):
+    all_pairs = build_pairs_all(dataset_root, label_folder=label_folder)
+    by_subject = defaultdict(list)
+    for (img, lab) in all_pairs:
+        sid = _parse_chase_subject_id(img)
+        by_subject[sid].append((img, lab))
+
+    subjects = sorted(by_subject.keys())
+    rng = np.random.RandomState(seed)
+
+    test_count = {sid: 0 for sid in subjects}
+    splits = []
+
+    for run_idx in range(n_runs):
+        # weights inversely proportional to (1 + test_count)
+        weights = [1.0 / (1 + test_count[sid]) for sid in subjects]
+        chosen_test = weighted_sample_without_replacement(subjects, weights, n_test_subjects, rng)
+
+        # update counts
+        for sid in chosen_test:
+            test_count[sid] += 1
+
+        train_subjects = [sid for sid in subjects if sid not in chosen_test]
+
+        def _flatten(sub_list):
+            out = []
+            for s in sub_list:
+                out.extend(sorted(by_subject[s], key=lambda t: _natural_key(Path(t[0]))))
+            return out
+
+        train_pairs = _flatten(train_subjects)
+        test_pairs  = _flatten(chosen_test)
+
+        splits.append((train_pairs, test_pairs, chosen_test))
+
+    return splits, test_count

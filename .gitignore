@@ -2,6 +2,7 @@ venv/
 myenv/
 .env/
 venv312/
+venv310/
 
 *.pyc
 *.pyo
