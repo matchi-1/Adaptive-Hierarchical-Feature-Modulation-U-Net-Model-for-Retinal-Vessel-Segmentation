@@ -5,7 +5,7 @@ from .geometry import (
     build_skeleton_graph,
     sample_width_along_skeleton,
     sample_widths_orthogonal,    
-    edge_full_path,           
+    _edge_full_path,           
 )
 
 from .metrics_global import (

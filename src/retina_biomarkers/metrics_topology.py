@@ -1,7 +1,7 @@
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from .geometry import to_bool_mask, edge_full_path
+from .geometry import to_bool_mask, _edge_full_path
 
 def junction_metrics(graph: Dict, image_shape: Tuple[int, int]) -> Dict[str, float]:
     H, W = image_shape
@@ -107,7 +107,7 @@ def branching_angles_roi(graph, disc_center, PD_px, max_PD=2.0, k_ahead=3):
 
     angles = []
     for e in graph["edges"]:
-        path = edge_full_path(graph, e)
+        path = _edge_full_path(graph, e)
         if len(path) < 2: 
             continue
         # u end
