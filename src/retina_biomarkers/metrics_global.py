@@ -36,31 +36,30 @@ def length_density(graph: Dict, image_shape: Tuple[int, int]) -> float:
     return total_len / float(H * W)
 
 
-def caliber_stats(widths_per_edge: List[np.ndarray], bins: Tuple[float, float, float] = (4.0, 8.0, np.inf)) -> Dict[str, float]:
+def caliber_stats(widths_per_edge, bins=(4.0, 8.0, np.inf), length_weighted=True):
     """
-    Compute global caliber statistics from width samples along skeleton edges.
-    Returns median, IQR, and length-weighted thin/medium/thick fractions.
-    bins: (thin_upper, medium_upper, thick_upper=inf) in pixels.
+    median/IQR and length fractions in thin/med/thick bins.
+    If length_weighted=True, weight by sample count (≈ arclength); else unweighted.
     """
-    # Flatten
-    all_widths = np.concatenate([w for w in widths_per_edge if w.size > 0], axis=0) if widths_per_edge else np.zeros(0, dtype=np.float32)
-    stats = {"median_width": float(np.median(all_widths)) if all_widths.size else 0.0,
-             "iqr_width": float(np.subtract(*np.percentile(all_widths, [75, 25]))) if all_widths.size else 0.0,
-             "frac_thin_len": 0.0, "frac_med_len": 0.0, "frac_thick_len": 0.0}
-
-    # Length-weighted fractions: approximate each sample as unit arc length
-    # (If you have segment lengths, you can pass them; here we treat adjacent pixel steps similarly.)
-    if all_widths.size:
+    import numpy as np
+    arrs = [w for w in widths_per_edge if w.size > 0]
+    allw = np.concatenate(arrs, axis=0) if arrs else np.zeros(0, dtype=np.float32)
+    stats = {
+        "median_width": float(np.median(allw)) if allw.size else 0.0,
+        "iqr_width": float(np.subtract(*np.percentile(allw, [75, 25]))) if allw.size else 0.0,
+        "frac_thin_len": 0.0, "frac_med_len": 0.0, "frac_thick_len": 0.0
+    }
+    if allw.size:
         thin_u, med_u, thick_u = bins
-        thin_mask = (all_widths <= thin_u)
-        med_mask  = (all_widths > thin_u) & (all_widths <= med_u)
-        thick_mask= (all_widths > med_u) & (all_widths <= thick_u)
-        total = float(all_widths.size)
-        stats["frac_thin_len"]  = float(thin_mask.sum()) / total
-        stats["frac_med_len"]   = float(med_mask.sum())  / total
-        stats["frac_thick_len"] = float(thick_mask.sum())/ total
-
+        thin = (allw <= thin_u)
+        med  = (allw > thin_u) & (allw <= med_u)
+        thick= (allw > med_u) & (allw <= thick_u)
+        N = float(allw.size)
+        stats["frac_thin_len"]  = float(thin.sum())/N
+        stats["frac_med_len"]   = float(med.sum())/N
+        stats["frac_thick_len"] = float(thick.sum())/N
     return stats
+
 
 
 def _tortuosity_edge(pixels: List[Tuple[int, int]]) -> float:

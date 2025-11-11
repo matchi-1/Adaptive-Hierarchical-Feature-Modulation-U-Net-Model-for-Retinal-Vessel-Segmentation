@@ -2,6 +2,69 @@
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 
+import numpy as np
+
+def _edge_full_path(graph, e):
+    return [(graph["nodes"][e["u"]]["y"], graph["nodes"][e["u"]]["x"])] + e["pixels"] + [(graph["nodes"][e["v"]]["y"], graph["nodes"][e["v"]]["x"])]
+
+def _tangent_at_index(path, i, k=3):
+    # robust finite-diff tangent using k-ahead/back sampling
+    j0 = max(0, i-k)
+    j1 = min(len(path)-1, i+k)
+    (y0,x0),(y1,x1) = path[j0], path[j1]
+    v = np.array([x1-x0, y1-y0], dtype=np.float32)
+    n = np.linalg.norm(v)
+    return v / (n + 1e-8)
+
+def _ray_width_from_point(mask, yx, normal, step=0.5, max_radius=20.0):
+    """
+    March along +n and -n from center until crossing mask boundary.
+    Subpixel DDA-style stepping on a binary mask.
+    Returns chord length in pixels (float).
+    """
+    H, W = mask.shape
+    def march(sign):
+        t = 0.0
+        y, x = float(yx[0]), float(yx[1])
+        ny, nx = float(normal[1])*sign, float(normal[0])*sign
+        prev_inside = True
+        while t < max_radius:
+            t += step
+            yy = int(round(y + ny*t))
+            xx = int(round(x + nx*t))
+            if yy < 0 or yy >= H or xx < 0 or xx >= W:
+                break
+            inside = bool(mask[yy, xx])
+            if prev_inside and not inside:
+                return t  # crossed boundary between last and this step
+            prev_inside = inside
+        return t
+    t_plus  = march(+1.0)
+    t_minus = march(-1.0)
+    return t_plus + t_minus  # total chord length (px)
+
+def sample_widths_orthogonal(mask, graph, k_tangent=3, step=0.5, max_radius=20.0, stride=1):
+    """
+    For each edge, compute orthogonal-chord width at (optionally strided) pixels.
+    Returns list[np.ndarray] aligned with graph['edges'] (like your EDT widths).
+    """
+    widths = []
+    for e in graph["edges"]:
+        path = _edge_full_path(graph, e)
+        if len(path) == 0:
+            widths.append(np.zeros(0, dtype=np.float32))
+            continue
+        w = []
+        for idx in range(0, len(path), max(1, stride)):
+            tan = _tangent_at_index(path, idx, k=k_tangent)
+            # normal = rotate tangent by +90°
+            normal = np.array([-tan[1], tan[0]], dtype=np.float32)
+            yx = path[idx]
+            w.append(_ray_width_from_point(mask, yx, normal, step=step, max_radius=max_radius))
+        widths.append(np.asarray(w, dtype=np.float32))
+    return widths
+
+
 # Attempt to use skimage skeletonize; fall back to Zhang-Suen if unavailable
 def _skeletonize_fallback_zhang_suen(img: np.ndarray) -> np.ndarray:
     """
