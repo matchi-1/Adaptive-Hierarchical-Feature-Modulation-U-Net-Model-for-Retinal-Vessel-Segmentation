@@ -1,7 +1,7 @@
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from .geometry import to_bool_mask
+from .geometry import to_bool_mask, edge_full_path
 
 def junction_metrics(graph: Dict, image_shape: Tuple[int, int]) -> Dict[str, float]:
     H, W = image_shape
@@ -83,6 +83,68 @@ def branching_and_bifurcation_angles(graph: Dict, k_ahead: int = 3) -> Dict[str,
         "angle_p10": float(np.percentile(arr, 10)),
         "angle_p50": float(np.percentile(arr, 50)),
         "angle_p90": float(np.percentile(arr, 90)),
+    }
+
+
+
+def branching_angles_roi(graph, disc_center, PD_px, max_PD=2.0, k_ahead=3):
+    """Junction pairwise angles for nodes within a disc-centered radius = max_PD * PD_px."""
+    cy, cx = disc_center
+    rmax2 = (max_PD * PD_px) ** 2
+
+    def in_roi(y,x): 
+        dy = y - cy; dx = x - cx
+        return (dy*dy + dx*dx) <= rmax2
+
+    # clear any temp vectors
+    for n in graph["nodes"].values():
+        if "dirs" in n:
+            del n["dirs"]
+
+    def unit(v):
+        n = np.linalg.norm(v); 
+        return v/(n+1e-8)
+
+    angles = []
+    for e in graph["edges"]:
+        path = edge_full_path(graph, e)
+        if len(path) < 2: 
+            continue
+        # u end
+        y0,x0 = path[0]; y1,x1 = path[min(k_ahead, len(path)-1)]
+        vu = np.array([x1-x0, y1-y0], dtype=np.float32)
+        # v end
+        y0,x0 = path[-1]; y1,x1 = path[max(0, len(path)-1-k_ahead)]
+        vv = np.array([x1-x0, y1-y0], dtype=np.float32)
+
+        for nid,vec,anchor in ((e["u"],vu,path[0]), (e["v"],vv,path[-1])):
+            ay,ax = anchor
+            if in_roi(ay,ax):
+                graph["nodes"].setdefault(nid,{}).setdefault("dirs",[]).append(vec)
+
+    for nid,n in graph["nodes"].items():
+        if "dirs" not in n or len(n["dirs"]) < 2:
+            continue
+        dirs = n["dirs"]
+        for i in range(len(dirs)):
+            for j in range(i+1,len(dirs)):
+                a = unit(dirs[i]); b = unit(dirs[j])
+                ang = float(np.degrees(np.arccos(np.clip(np.dot(a,b), -1.0, 1.0))))
+                angles.append(ang)
+
+    for n in graph["nodes"].values():
+        if "dirs" in n:
+            del n["dirs"]
+
+    if not angles:
+        return {"angle_mean":0.0,"angle_std":0.0,"angle_p10":0.0,"angle_p50":0.0,"angle_p90":0.0}
+    arr = np.asarray(angles, dtype=np.float32)
+    return {
+        "angle_mean": float(arr.mean()),
+        "angle_std": float(arr.std()),
+        "angle_p10": float(np.percentile(arr,10)),
+        "angle_p50": float(np.percentile(arr,50)),
+        "angle_p90": float(np.percentile(arr,90)),
     }
 
 
