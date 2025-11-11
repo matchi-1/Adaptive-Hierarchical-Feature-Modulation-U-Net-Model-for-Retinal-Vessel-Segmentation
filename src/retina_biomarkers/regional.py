@@ -117,3 +117,13 @@ def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=
         tt = _tortuosity_mean_in_roi(graph, roi)
         out[key] = {"area_density":ad, "length_density":ld, "fractal_dimension":fd, "median_width":med, "iqr_width":iqr, "tortuosity_mean":tt}
     return out
+
+def quadrant_masks(shape, center):
+    H, W = shape; cy, cx = center
+    yy, xx = np.mgrid[0:H, 0:W]
+    return {
+        "upper":  (yy <  cy),
+        "lower":  (yy >= cy),
+        "left":   (xx <  cx),
+        "right":  (xx >= cx),
+    }
