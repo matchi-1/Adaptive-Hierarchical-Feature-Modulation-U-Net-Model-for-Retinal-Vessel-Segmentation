@@ -280,5 +280,81 @@ def chase_mc_balanced_splits(
         test_pairs  = _flatten(chosen_test)
 
         splits.append((train_pairs, test_pairs, chosen_test))
+        print(splits[run_idx][2])
+    print(test_count)
+    return splits, test_count
 
+
+
+def drive_mc_balanced_splits(
+    dataset_root: str,
+    label_folder: str = "1st_manual",
+    n_runs: int = 5,
+    n_test_images: int = 20,
+    seed: int = 1337,
+):
+    """
+    Monte-Carlo CV for DRIVE:
+      • Merge training + test → 40 images total.
+      • Each image is treated as its own "subject".
+      • For each run:
+          - pick n_test_images (default 20) images as TEST
+          - remaining images become TRAIN
+      • A per-image test_count keeps track of how often an image has been used as TEST.
+        Sampling weights = 1 / (1 + test_count[idx]) so frequently used images are
+        less likely to be chosen again.
+
+    Returns:
+        splits: list of length n_runs
+            each element = (train_pairs, test_pairs, chosen_test_indices)
+        test_count: dict {image_index: times_chosen_as_test}
+    """
+    # 1) get all (img, label) pairs from both DRIVE/training and DRIVE/test
+    all_pairs = build_pairs_all(dataset_root, label_folder=label_folder)
+    n_total = len(all_pairs)
+    if n_total != 40:
+        print(f"[DRIVE] Warning: expected 40 images total, found {n_total}")
+    if n_test_images >= n_total:
+        raise ValueError("n_test_images must be < total number of images")
+
+    # We'll identify images simply by index 0..n_total-1
+    image_ids = list(range(n_total))
+
+    rng = np.random.RandomState(seed)
+
+    # how many times each image has been used as TEST across runs
+    test_count = {idx: 0 for idx in image_ids}
+    splits = []
+
+    for run_idx in range(n_runs):
+        # 2) build weights inversely proportional to (1 + test_count)
+        #    → images used more as TEST get lower weight (soft penalty)
+        weights = [1.0 / (1 + test_count[idx]) for idx in image_ids]
+
+        # 3) sample test indices without replacement using these weights
+        chosen_test_idx = weighted_sample_without_replacement(
+            items=image_ids,
+            weights=weights,
+            k=n_test_images,
+            rng=rng
+        )
+
+        # update counts
+        for idx in chosen_test_idx:
+            test_count[idx] += 1
+
+        chosen_test_set = set(chosen_test_idx)
+        train_idx = [idx for idx in image_ids if idx not in chosen_test_set]
+
+        # 4) map indices back to (img, label) pairs
+        train_pairs = [all_pairs[idx] for idx in train_idx]
+        test_pairs  = [all_pairs[idx] for idx in chosen_test_idx]
+
+        # optional: print which filenames ended up in test
+        test_names = [Path(all_pairs[idx][0]).name for idx in chosen_test_idx]
+        print(f"[DRIVE] Run {run_idx:02d} TEST images:", test_names)
+
+        splits.append((train_pairs, test_pairs, chosen_test_idx))
+
+    print("[DRIVE] Final per-image test counts:", test_count)
     return splits, test_count
