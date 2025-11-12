@@ -251,6 +251,16 @@ def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, com
         if k in micro:
             print(f"{k:15s}: {micro[k]:.4f}")
 
+    return dict(ACC=macro["Accuracy"], 
+                Dice=macro["Dice"], 
+                IoU=macro["IoU"], 
+                SEN=macro["Sensitivity"], 
+                SPE=macro["Specificity"], 
+                AUC=macro["ROC_AUC"], 
+                AP=macro["PR_AUC"],
+                CLDICE=macro["clDice"],
+                tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn))
+
 
 from typing import List, Dict, Tuple
 
