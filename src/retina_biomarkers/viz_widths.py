@@ -4,145 +4,168 @@ from skimage.measure import find_contours
 
 import numpy as np
 
+import numpy as np
+
+def _bilinear_sample(arr, y, x):
+    H, W = arr.shape
+    if y < 0 or y > H-1 or x < 0 or x > W-1:
+        return 0.0
+    y0 = int(np.floor(y)); x0 = int(np.floor(x))
+    y1 = min(y0+1, H-1);   x1 = min(x0+1, W-1)
+    wy = y - y0; wx = x - x0
+    v00 = arr[y0, x0]; v01 = arr[y0, x1]
+    v10 = arr[y1, x0]; v11 = arr[y1, x1]
+    return float((1-wy)*((1-wx)*v00 + wx*v01) + wy*((1-wx)*v10 + wx*v11))
+
 def _resample_polyline_xy(xy, ds):
-    """Uniform arc-length resample of an Nx2 polyline (x,y). Returns Mx2 points."""
     if len(xy) < 2: return xy.copy()
-    seg = np.diff(xy, axis=0)
-    seglen = np.linalg.norm(seg, axis=1)
-    L = np.concatenate([[0.0], np.cumsum(seglen)])
-    total = L[-1]
+    d = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(d)])
+    total = s[-1]
     if total < 1e-6: return xy[:1].copy()
-    s = np.arange(0.0, total, ds)
+    ts = np.arange(0.0, total, ds)
     out = []
     j = 0
-    for t in s:
-        while j+1 < len(L) and L[j+1] < t:
-            j += 1
-        if j+1 >= len(L):
+    for t in ts:
+        while j+1 < len(s) and s[j+1] < t: j += 1
+        if j+1 >= len(s):
             out.append(xy[-1]); break
-        # interpolate within segment j
-        alpha = (t - L[j]) / max(L[j+1] - L[j], 1e-8)
-        p = xy[j] + alpha * (xy[j+1] - xy[j])
-        out.append(p)
-    out = np.vstack(out)
-    # always end at the last point
-    if np.linalg.norm(out[-1] - xy[-1]) > 1e-6:
-        out = np.vstack([out, xy[-1]])
-    return out
+        a = (t - s[j]) / max(s[j+1]-s[j], 1e-8)
+        out.append(xy[j] + a*(xy[j+1]-xy[j]))
+    if np.linalg.norm(out[-1]-xy[-1]) > 1e-6:
+        out.append(xy[-1])
+    return np.vstack(out)
 
-def collect_orthogonal_chords(
-    mask, graph, dist=None, *,
-    stride_by_arc=3.0,         # tick spacing in *pixels of arc length*
-    margin_from_nodes=8.0,     # skip within this many pixels from either end of an edge
-    k_tangent=3.0,             # tangent window in pixels along the resampled curve
-    step=0.25,                 # marching step (subpixel)
-    max_radius=20.0,           # absolute cap for half-chord
-    clip_k_edt=1.35,           # also cap half-chord <= k * EDT(center)
-    min_len=0.5                # keep very thin chords
+def collect_orthogonal_chords_v3(
+    mask, graph, dist, *,
+    stride_by_arc=2.0,       # dense ticks
+    margin_from_nodes=10.0,  # keep away from junctions/endpoints
+    k_tangent=4.0,           # tangent window (px along arc)
+    step=0.25,               # subpixel marching
+    max_radius=20.0,         # hard cap
+    clip_k_edt=1.25,         # also cap by k * local EDT
+    min_len=0.5,             # accept very thin
+    kappa_max=0.20,          # curvature gate (~1/radius); 0.2 => radius ~5px
+    asym_max_ratio=1.6,      # reject chords with big Lleft/Lright asymmetry
+    edt_eps=1e-3
 ):
     """
-    Returns chords as [((yL,xL),(yR,xR),(yc,xc)), ...]
-    - Dense ticks (arc-length)
-    - Skips near junctions and endpoints
-    - Uses EDT to avoid overlong chords near branches
+    Returns chords [((yL,xL),(yR,xR),(yc,xc)), ...] with:
+      • arc-length sampling,
+      • curvature gating,
+      • EDT-monotone marching to first local maximum,
+      • symmetry filtering to avoid diagonal overshoot near branches.
     """
     M = (mask > 0).astype(bool)
     H, W = M.shape
-    have_edt = dist is not None
 
     def _full_path(e):
         return [(graph["nodes"][e["u"]]["y"], graph["nodes"][e["u"]]["x"])] + \
                e["pixels"] + \
                [(graph["nodes"][e["v"]]["y"], graph["nodes"][e["v"]]["x"])]
 
-    def _ray_endpoint(py, px, dy, dx, half_cap):
-        """march from (py,px) along (dy,dx) ≤ half_cap (px), stop at mask boundary"""
-        y, x = float(py), float(px)
+    def _ray_to_local_max(yc, xc, ny, nx, half_cap):
+        """march outward; stop at the first local EDT maximum or boundary."""
+        y = float(yc); x = float(xc)
         lasty, lastx = y, x
+        prev = _bilinear_sample(dist, y, x)
+        grew = False
         r = 0.0
         while r < half_cap:
-            y += dy * step; x += dx * step; r += step
+            y += ny*step; x += nx*step; r += step
             iy, ix = int(round(y)), int(round(x))
-            if iy < 0 or iy >= H or ix < 0 or ix >= W: break
-            if not M[iy, ix]:
-                # step back one step for a crude boundary
-                y -= dy * step; x -= dx * step
+            if iy < 0 or iy >= H or ix < 0 or ix >= W or not M[iy, ix]:
+                # step back one step for boundary touch
+                y -= ny*step; x -= nx*step
                 break
+            cur = _bilinear_sample(dist, y, x)
+            if cur + edt_eps < prev and grew:
+                # passed the local max → backtrack one step
+                y -= ny*step; x -= nx*step
+                break
+            grew |= (cur > prev + edt_eps)
+            prev = cur
             lasty, lastx = y, x
-        return lasty, lastx
+        return lasty, lastx, r
 
     chords = []
     for e in graph["edges"]:
         path_yx = _full_path(e)
-        if len(path_yx) < 2: 
+        if len(path_yx) < 2:
             continue
-
-        # degree at endpoints (avoid branch zones)
         udeg = graph["nodes"][e["u"]]["deg"]
         vdeg = graph["nodes"][e["v"]]["deg"]
 
-        # resample edge by arc length
-        xy = np.array([(p[1], p[0]) for p in path_yx], dtype=np.float32)  # (x,y)
+        xy = np.array([(p[1], p[0]) for p in path_yx], dtype=np.float32)
         xy_u = _resample_polyline_xy(xy, stride_by_arc)
-
-        # cumulative length on resampled curve
         seg = np.diff(xy_u, axis=0)
         seglen = np.linalg.norm(seg, axis=1)
-        L = np.concatenate([[0.0], np.cumsum(seglen)])
-        total = L[-1]
+        S = np.concatenate([[0.0], np.cumsum(seglen)])
+        total = S[-1]
+        if total < 1e-6: 
+            continue
 
-        # per-sample tangent via centered finite difference over ~k_tangent window
+        # precompute tangent angle along the resampled curve
+        dxy = np.gradient(xy_u, axis=0)   # central diffs
+        theta = np.arctan2(dxy[:,1], dxy[:,0])
+
         for i in range(len(xy_u)):
-            # skip near endpoints or if either endpoint is a junction (deg!=2)
-            s = L[i]
+            s = S[i]
+            # keep away from ends / junction touch
             if s < margin_from_nodes or (total - s) < margin_from_nodes:
                 continue
             if udeg != 2 or vdeg != 2:
-                # whole edge touches a junction; still allow interior but keep larger margins
                 if s < max(margin_from_nodes, 1.5*k_tangent) or (total - s) < max(margin_from_nodes, 1.5*k_tangent):
                     continue
 
-            # indices for tangent window
-            # find s±k_tangent in L
-            s0 = max(0.0, s - k_tangent)
-            s1 = min(total, s + k_tangent)
-            # locate bracketing indices
-            j0 = np.searchsorted(L, s0, side='left')
-            j1 = np.searchsorted(L, s1, side='right') - 1
-            if j1 <= j0:
+            # curvature gate (|Δθ|/Δs) around i
+            i0 = max(0, i-2); i1 = min(len(xy_u)-1, i+2)
+            dth = np.unwrap(theta[i0:i1+1])
+            Lwin = S[i1] - S[i0]
+            if Lwin > 1e-6:
+                kappa = abs(dth[-1] - dth[0]) / Lwin
+                if kappa > kappa_max:
+                    continue
+
+            # normal
+            t = dxy[i]; nrm = np.hypot(t[0], t[1])
+            if nrm < 1e-6: 
                 continue
-            # approximate tangent as endpoint difference over window
-            t = xy_u[j1] - xy_u[j0]
-            nrm = np.hypot(t[0], t[1])
-            if nrm < 1e-6:
-                continue
-            # normal = rotate tangent by 90°
-            ny, nx = -t[1]/nrm, t[0]/nrm
+            ny, nx = -t[1]/nrm, t[0]/nrm  # (y,x) normal
 
             yc, xc = xy_u[i][1], xy_u[i][0]
             iy, ix = int(round(yc)), int(round(xc))
+            if iy < 0 or iy >= H or ix < 0 or ix >= W:
+                continue
 
-            # half-chord cap: min(max_radius, k * EDT)
-            half_cap = max_radius
-            if have_edt and 0 <= iy < H and 0 <= ix < W:
-                half_cap = min(half_cap, clip_k_edt * float(dist[iy, ix]))
+            half_cap = min(max_radius, clip_k_edt * float(dist[iy, ix]))
 
-            yL, xL = _ray_endpoint(yc, xc, -ny, -nx, half_cap)
-            yR, xR = _ray_endpoint(yc, xc,  ny,  nx, half_cap)
+            yL, xL, rL = _ray_to_local_max(yc, xc, -ny, -nx, half_cap)
+            yR, xR, rR = _ray_to_local_max(yc, xc,  ny,  nx, half_cap)
+
             length = np.hypot(yR - yL, xR - xL)
-            if length >= min_len:
-                chords.append(((yL, xL), (yR, xR), (yc, xc)))
+            if length < min_len:
+                continue
+
+            # symmetry check
+            small = max(rL, 1e-6); big = max(rR, 1e-6)
+            ratio = max(big, small) / max(min(big, small), 1e-6)
+            if ratio > asym_max_ratio:
+                continue
+
+            chords.append(((yL, xL), (yR, xR), (yc, xc)))
 
     return chords
 
 
+
 def plot_vessel_widths_overlay(
     rgb, mask, graph, *, chords=None,
-    boundary_color="tab:blue", center_color="white", chord_color="red",
+    boundary_color="blue", center_color="white", chord_color="red",
     # >>> 1px everywhere except 1.5px for red chords
-    chord_lw=1.5, center_lw=1.0, boundary_lw=1.0,
+    chord_lw=1.0, center_lw=1.0, boundary_lw=1.0,
     chord_alpha=0.95,
-    max_chords=20000,           # allow plenty; we’ll still clip by zoom
+    max_chords=30000,           # allow plenty; we’ll still clip by zoom
     zoom=None,                  # zoom=(yc,xc,half_size) in pixels
     figsize=(7,7)
 ):
@@ -201,5 +224,5 @@ def plot_vessel_widths_overlay(
                     color=chord_color, lw=chord_lw, alpha=chord_alpha,
                     solid_capstyle="butt", antialiased=False)
 
-    ax.set_title("Centerline (white, 1px) • widths (red, 1.5px) • boundary (blue, 1px)")
+    ax.set_title("Centerline (white, 1px) • widths (red, 1px) • boundary (blue, 1px)")
     plt.show()
