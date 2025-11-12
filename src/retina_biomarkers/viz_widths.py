@@ -4,8 +4,6 @@ from skimage.measure import find_contours
 
 import numpy as np
 
-import numpy as np
-
 def _bilinear_sample(arr, y, x):
     H, W = arr.shape
     if y < 0 or y > H-1 or x < 0 or x > W-1:
@@ -36,25 +34,52 @@ def _resample_polyline_xy(xy, ds):
         out.append(xy[-1])
     return np.vstack(out)
 
-def collect_orthogonal_chords_v3(
+def _smooth_angles(theta, win=9):
+    """unwrap → moving average smooth on angle"""
+    th = np.unwrap(theta.astype(np.float64))
+    k = max(3, int(win) | 1)                  # odd
+    kern = np.ones(k, dtype=np.float64) / k
+    th_s = np.convolve(th, kern, mode="same")
+    return th_s
+
+def _local_pca_tangent(skel_pts_xy, i, radius_px=5):
+    """optional: robust tangent from PCA in a local disk."""
+    xy = skel_pts_xy
+    xc, yc = xy[i]
+    d = np.hypot(xy[:,0]-xc, xy[:,1]-yc)
+    idx = np.where(d <= radius_px)[0]
+    if idx.size < 3:            # fallback to finite diff
+        return None
+    P = xy[idx] - P_mean if (P := xy[idx]).size and (P_mean := P.mean(axis=0)) is not None else xy[idx]
+    C = (P.T @ P) / max(len(idx)-1, 1)
+    vals, vecs = np.linalg.eigh(C)
+    v = vecs[:, np.argmax(vals)]  # principal direction (x,y)
+    # ensure consistent sign with forward finite-diff
+    if i+1 < len(xy):
+        fd = xy[i+1] - xy[i]
+        if np.dot(v, fd) < 0: v = -v
+    return v
+
+def collect_orthogonal_chords_v4(
     mask, graph, dist, *,
-    stride_by_arc=2.0,       # dense ticks
-    margin_from_nodes=10.0,  # keep away from junctions/endpoints
-    k_tangent=4.0,           # tangent window (px along arc)
-    step=0.25,               # subpixel marching
-    max_radius=20.0,         # hard cap
-    clip_k_edt=1.25,         # also cap by k * local EDT
-    min_len=0.5,             # accept very thin
-    kappa_max=0.20,          # curvature gate (~1/radius); 0.2 => radius ~5px
-    asym_max_ratio=1.6,      # reject chords with big Lleft/Lright asymmetry
+    stride_by_arc=2.0,
+    margin_from_nodes=10.0,
+    step=0.25,
+    max_radius=20.0,
+    clip_k_edt=1.25,
+    min_len=0.5,
+    # orientation controls (NEW)
+    tan_win_px=9,            # smooth the tangent over this many resampled points
+    use_pca=False,           # set True if you prefer PCA tangent (slower, very stable)
+    pca_radius_px=6,
+    # safety gates
+    kappa_max=0.20,
+    asym_max_ratio=1.6,
     edt_eps=1e-3
 ):
     """
-    Returns chords [((yL,xL),(yR,xR),(yc,xc)), ...] with:
-      • arc-length sampling,
-      • curvature gating,
-      • EDT-monotone marching to first local maximum,
-      • symmetry filtering to avoid diagonal overshoot near branches.
+    Returns chords [((yL,xL),(yR,xR),(yc,xc)), ...] that are strictly
+    perpendicular to a smoothed local tangent.
     """
     M = (mask > 0).astype(bool)
     H, W = M.shape
@@ -65,28 +90,24 @@ def collect_orthogonal_chords_v3(
                [(graph["nodes"][e["v"]]["y"], graph["nodes"][e["v"]]["x"])]
 
     def _ray_to_local_max(yc, xc, ny, nx, half_cap):
-        """march outward; stop at the first local EDT maximum or boundary."""
         y = float(yc); x = float(xc)
-        lasty, lastx = y, x
         prev = _bilinear_sample(dist, y, x)
-        grew = False
-        r = 0.0
+        grew = False; r = 0.0
+        last_y, last_x = y, x
         while r < half_cap:
             y += ny*step; x += nx*step; r += step
             iy, ix = int(round(y)), int(round(x))
             if iy < 0 or iy >= H or ix < 0 or ix >= W or not M[iy, ix]:
-                # step back one step for boundary touch
                 y -= ny*step; x -= nx*step
                 break
             cur = _bilinear_sample(dist, y, x)
             if cur + edt_eps < prev and grew:
-                # passed the local max → backtrack one step
                 y -= ny*step; x -= nx*step
                 break
             grew |= (cur > prev + edt_eps)
             prev = cur
-            lasty, lastx = y, x
-        return lasty, lastx, r
+            last_y, last_x = y, x
+        return last_y, last_x, r
 
     chords = []
     for e in graph["edges"]:
@@ -96,7 +117,8 @@ def collect_orthogonal_chords_v3(
         udeg = graph["nodes"][e["u"]]["deg"]
         vdeg = graph["nodes"][e["v"]]["deg"]
 
-        xy = np.array([(p[1], p[0]) for p in path_yx], dtype=np.float32)
+        # resample centerline
+        xy = np.array([(p[1], p[0]) for p in path_yx], dtype=np.float32)  # (x,y)
         xy_u = _resample_polyline_xy(xy, stride_by_arc)
         seg = np.diff(xy_u, axis=0)
         seglen = np.linalg.norm(seg, axis=1)
@@ -105,33 +127,39 @@ def collect_orthogonal_chords_v3(
         if total < 1e-6: 
             continue
 
-        # precompute tangent angle along the resampled curve
-        dxy = np.gradient(xy_u, axis=0)   # central diffs
-        theta = np.arctan2(dxy[:,1], dxy[:,0])
+        # raw finite-diff tangent, then SMOOTH its angle
+        dxy = np.gradient(xy_u, axis=0)
+        theta_raw = np.arctan2(dxy[:,1], dxy[:,0])
+        theta_sm = _smooth_angles(theta_raw, win=tan_win_px)
+
+        # curvature for gating (from smoothed theta)
+        dth = np.gradient(theta_sm)
+        ds  = np.gradient(S)
+        kappa = np.abs(dth) / np.maximum(ds, 1e-6)
 
         for i in range(len(xy_u)):
             s = S[i]
-            # keep away from ends / junction touch
             if s < margin_from_nodes or (total - s) < margin_from_nodes:
                 continue
-            if udeg != 2 or vdeg != 2:
-                if s < max(margin_from_nodes, 1.5*k_tangent) or (total - s) < max(margin_from_nodes, 1.5*k_tangent):
-                    continue
+            if max(kappa[i], 0.0) > kappa_max:
+                continue
 
-            # curvature gate (|Δθ|/Δs) around i
-            i0 = max(0, i-2); i1 = min(len(xy_u)-1, i+2)
-            dth = np.unwrap(theta[i0:i1+1])
-            Lwin = S[i1] - S[i0]
-            if Lwin > 1e-6:
-                kappa = abs(dth[-1] - dth[0]) / Lwin
-                if kappa > kappa_max:
-                    continue
+            # stable tangent: smoothed angle OR local PCA
+            if use_pca:
+                v = _local_pca_tangent(xy_u, i, radius_px=pca_radius_px)
+                if v is None:
+                    tx, ty = np.cos(theta_sm[i]), np.sin(theta_sm[i])
+                else:
+                    tx, ty = float(v[0]), float(v[1])
+            else:
+                tx, ty = np.cos(theta_sm[i]), np.sin(theta_sm[i])
 
-            # normal
-            t = dxy[i]; nrm = np.hypot(t[0], t[1])
+            # normal (y,x)
+            ny, nx = -ty, tx
+            nrm = np.hypot(ny, nx)
             if nrm < 1e-6: 
                 continue
-            ny, nx = -t[1]/nrm, t[0]/nrm  # (y,x) normal
+            ny, nx = ny/nrm, nx/nrm
 
             yc, xc = xy_u[i][1], xy_u[i][0]
             iy, ix = int(round(yc)), int(round(xc))
@@ -147,9 +175,7 @@ def collect_orthogonal_chords_v3(
             if length < min_len:
                 continue
 
-            # symmetry check
-            small = max(rL, 1e-6); big = max(rR, 1e-6)
-            ratio = max(big, small) / max(min(big, small), 1e-6)
+            ratio = max(rL, rR) / max(min(rL, rR), 1e-6)
             if ratio > asym_max_ratio:
                 continue
 
