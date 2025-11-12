@@ -7,3 +7,9 @@ torchvision
 pillow
 scikit-learn
 albumentations
+transformers
+torch
+opencv-python
+scikit-image
+matplotlib
+numpy
