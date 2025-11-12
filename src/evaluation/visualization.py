@@ -111,7 +111,7 @@ def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
             bin_np (np.ndarray): Binary mask (thresholded).
     """
     model.eval()
-    x = img_1hw.unsqueeze(0).to(device)  # [1,1,H,W]
+    x = img_1hw.unsqueeze(0).to(device, dtype=torch.float32)  # [1,1,H,W]
     out = model(x)
 
     # --- NEW: handle dict / list / tensor outputs uniformly ---
@@ -154,6 +154,8 @@ def visualize_samples(
     threshold=0.5,
     clamp_pred_with_fov=True,
     figsize_per_row=(12, 3),
+    is_save = False,
+    save_dir = None
 ):
     """
     Show a grid of model predictions compared to original and ground truth.
@@ -172,9 +174,9 @@ def visualize_samples(
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
+    model.to(device).float()
 
-    n_cols = 5  # Original | Preprocessed | Ground Truth 1 | Ground Truth 2 | Predicted
+    n_cols = 6  # Original | Preprocessed | Ground Truth 1 | Ground Truth 2 | Prob | Predicted
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(figsize_per_row[0], figsize_per_row[1] * n_rows))
     if n_rows == 1:
@@ -189,6 +191,7 @@ def visualize_samples(
         msks = batch["mask"]      # Ground truth masks
         fovs = batch.get("fov", None)   # FOV
         paths = batch.get("image_path", None)
+        img_stem = Path(paths[0]).stem
 
         for b in range(imgs.shape[0]):
             # Loop over all images in the current batch
@@ -220,8 +223,8 @@ def visualize_samples(
                 fov_np = _to_hw_numpy_01(fov_1hw)
                 pred = pred * fov_np
 
-            row_imgs = [original, pre, gt1, gt2, pred]
-            titles   = ["Original", "Preprocessed", "Ground Truth 1", "Ground Truth 2",
+            row_imgs = [original, pre, gt1, gt2, prob, pred]
+            titles   = [f"Original ({img_stem})", "Preprocessed", "Ground Truth 1", "Ground Truth 2", "Probabilities",
                         f"Predicted (≥{threshold:.2f})"]
 
             for c in range(n_cols):
@@ -234,6 +237,8 @@ def visualize_samples(
 
     plt.tight_layout()
     plt.show()
+    if is_save: fig.savefig(save_dir, dpi=150)
+    plt.close(fig)
 
 
 
@@ -411,3 +416,4 @@ def visualize_models_from_loader(
 
     plt.tight_layout()
     plt.show()
+    
