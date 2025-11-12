@@ -9,7 +9,7 @@ def extract_disc_mask_safe(
     pred_map: np.ndarray,
     id2label: dict,
     img_shape=None,
-    cup_dilate_frac: float = 0.06,
+    cup_dilate_frac: float = 0.10,
 ) -> np.ndarray:
     """
     Robust disc mask from a label map:
@@ -53,18 +53,30 @@ def extract_disc_mask_safe(
     return disc.astype(np.uint8)
 
 def center_and_pd_with_bounds(
-    disc_bin: np.ndarray,
+    disc_bin,
     img_shape,
-    r_frac: Tuple[float, float] = (0.08, 0.16),
+    r_frac=(0.08, 0.16),
+    *,
+    allow_fallback: bool = False,
+    fallback_center_yx=None,   # e.g., (H/2, W/2)
+    fallback_PD_px: float = None  # e.g., dataset constant or 0.2*min(H,W)
 ):
-    """
-    Compute center (cy,cx) and PD from disc area; clamp PD to a plausible radius fraction.
-    Returns (center_yx, PD_raw, PD_clamped).
-    """
     H, W = img_shape[:2]
+    disc_bin = (np.asarray(disc_bin) > 0)
+
     lab = label(disc_bin)
     if lab.max() == 0:
-        return None, None, None
+        if not allow_fallback:
+            raise ValueError("center_and_pd_with_bounds: empty disc mask (no components).")
+        # fallback center
+        if fallback_center_yx is None:
+            fallback_center_yx = (H/2.0, W/2.0)
+        # fallback PD
+        if fallback_PD_px is None:
+            # ~radius 10% of min dim → PD ≈ 0.20 * min(H,W)
+            fallback_PD_px = 0.20 * min(H, W)
+        return fallback_center_yx, float(fallback_PD_px), float(fallback_PD_px)
+
     props = regionprops(lab.astype(int))[0]
     cy, cx = props.centroid
     area = float(props.area)
