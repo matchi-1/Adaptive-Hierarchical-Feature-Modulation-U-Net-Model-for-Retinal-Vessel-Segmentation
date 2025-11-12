@@ -8,6 +8,13 @@ from .geometry import (
     _edge_full_path,           
 )
 
+from .viz_widths import (
+    collect_orthogonal_chords,
+    draw_chords_on_ax,
+    plot_vessel_widths_overlay,         
+)
+
+
 from .metrics_global import (
     area_density,
     length_density,
