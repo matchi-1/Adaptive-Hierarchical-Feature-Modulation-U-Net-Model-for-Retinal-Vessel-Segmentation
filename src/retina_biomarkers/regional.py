@@ -168,8 +168,20 @@ def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px,
         else:
             med = 0.0; iqr = 0.0
         tt = _tortuosity_mean_in_roi(graph, roi)
-        out[key] = {"area_density": ad, "length_density": ld, "fractal_dimension": fd,
-                    "median_width": med, "iqr_width": iqr, "tortuosity_mean": tt}
+        # normalize by PD^2 if available
+        tt_PD2       = tt * (PD_px ** 2)
+        tt_PD2_x1e3  = 1e3 * tt_PD2
+
+        out[key] = {
+            "area_density":  ad,
+            "length_density": ld,
+            "fractal_dimension": fd,
+            "median_width":  med,
+            "iqr_width":     iqr,
+            "tortuosity_mean":           tt,          # px^-2
+            "tortuosity_mean_PD2":       tt_PD2,      # dimensionless (per PD^2)
+            "tortuosity_mean_PD2_x1e3":  tt_PD2_x1e3  # paper-friendly display
+        }
     return out
 
 def quadrant_masks(shape, center):
