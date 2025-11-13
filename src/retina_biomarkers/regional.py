@@ -71,6 +71,19 @@ def _total_edge_length_in_roi(graph, roi, samples=7):
     return total
 
 
+def _edge_length_in_roi_sampled(graph, e, roi, samples=7):
+    path = _edge_full_path(graph, e)
+    if len(path) < 2:
+        return 0.0
+    pts = np.asarray([(p[1], p[0]) for p in path], dtype=np.float32)  # (x,y)
+    L_in = 0.0
+    for i in range(len(path) - 1):
+        seg_len = float(np.linalg.norm(pts[i+1] - pts[i]))
+        frac = _edge_length_in_roi_fraction(path[i], path[i+1], roi, samples=samples)
+        L_in += seg_len * frac
+    return L_in
+
+
 def _tortuosity_edge(pixels):
     if len(pixels) < 3: return 0.0
     import numpy as np
@@ -87,20 +100,17 @@ def _tortuosity_edge(pixels):
     return integral / float(seglen.sum())
 
 def _tortuosity_mean_in_roi(graph, roi):
-    vals=[]; lens=[]
+    vals, lens = [], []
     for e in graph["edges"]:
         path = _edge_full_path(graph, e)
-        L_in = 0.0
-        # compute t for full path (robust) but weight by length inside roi
-        t = _tortuosity_edge(path)
-        # length inside roi
-        L_in = _edge_length_in_roi(graph, e, roi)
+        t = _tortuosity_edge(path)                          # tortuosity on full edge geometry
+        L_in = _edge_length_in_roi_sampled(graph, e, roi)   # length *inside* ROI (sampled)
         if L_in > 0:
             vals.append(t); lens.append(L_in)
-    if not vals: return 0.0
-    import numpy as np
-    vals = np.asarray(vals, np.float32); lens=np.asarray(lens, np.float32)
-    return float((vals*lens).sum()/np.maximum(lens.sum(),1e-6))
+    if not vals:
+        return 0.0
+    vals = np.asarray(vals, np.float32); lens = np.asarray(lens, np.float32)
+    return float((vals * lens).sum() / max(lens.sum(), 1e-6))
 
 def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, *, edt_interior=True):
     """
