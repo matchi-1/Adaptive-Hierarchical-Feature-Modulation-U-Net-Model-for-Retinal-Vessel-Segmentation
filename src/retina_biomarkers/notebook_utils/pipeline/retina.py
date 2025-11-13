@@ -1,25 +1,23 @@
 import numpy as np, torch
 from PIL import Image
 
-from src.pipeline.config import PipelineConfig
+from src.retina_biomarkers.notebook_utils.pipeline.config import PipelineConfig
 from src.data.preprocessing import _iso_resize_and_pad
 from apps.streamlit.lib.preprocess import preprocess_image_retina_from_pil
-from src.models.dpcn_loader import load_dpcn_from_ckpt, infer_seg_maps
+from src.retina_biomarkers.notebook_utils.models.mathfi_loader import load_dpcn_from_ckpt, infer_seg_maps
 
-# OD segmentation (you already have these)
+# OD segmentation 
 from src.retina_biomarkers.od_seg import (
     load_refuge_segformer, infer_label_map, extract_disc_mask_safe,
     center_and_pd_with_bounds,
 )
 
-# Biomarkers (we’ll call your existing functions + our wrapper below)
-from src.retina_biomarkers.skeleton import skeletonize_mask, build_skeleton_graph
-from src.retina_biomarkers.geometry import distance_transform
+# Biomarkers
+from src.retina_biomarkers.geometry import distance_transform, sample_widths_orthogonal, sample_width_along_skeleton, skeletonize_mask, build_skeleton_graph
 from src.retina_biomarkers.metrics_global import (
     area_density, length_density, caliber_stats, tortuosity_stats, fractal_dimension_boxcount
 )
 from src.retina_biomarkers.regional import metrics_by_rings
-from src.retina_biomarkers.widths import sample_widths_orthogonal, sample_width_along_skeleton
 
 def compute_biomarkers_from_mask_array(
     mask_01: np.ndarray,
@@ -30,7 +28,7 @@ def compute_biomarkers_from_mask_array(
     ortho_max_radius: float = 20.0,
 ) -> dict:
     """
-    Keeps your logic; adds PD-normalized tortuosity (×1e3) to mirror papers.
+    Keeps logic; adds PD-normalized tortuosity (×1e3) to mirror papers.
     Assumes metrics_by_rings() in regional.py accepts edt_interior=... (set default there to be safe).
     """
     mask = (mask_01 > 0).astype(np.uint8)
@@ -66,7 +64,7 @@ def compute_biomarkers_from_mask_array(
         g["tortuosity_mean_PD2"] = T_PD2
         g["tortuosity_mean_PD2_x1e3"] = 1e3 * T_PD2
 
-    # topology (you already had these; keep your implementation there if preferred)
+    # topology 
     from src.retina_biomarkers.metrics_topology import (
         junction_metrics, branching_and_bifurcation_angles, branching_angles_roi, gap_metrics
     )
@@ -82,13 +80,13 @@ def compute_biomarkers_from_mask_array(
 
     rings = None
     if disc_center is not None and PD_px is not None:
-        # IMPORTANT: ensure your regional.metrics_by_rings has edt_interior arg or aligns to widths_orth indexing
+        # IMPORTANT: ensure regional.metrics_by_rings has edt_interior arg or aligns to widths_orth indexing
         rings = metrics_by_rings(
             mask, graph, widths_orth, disc_center=disc_center, PD_px=PD_px,
             use_orth=True
         )
 
-        # add ring tortuosity ×1e3 per PD² if your metrics_by_rings returns px units
+        # add ring tortuosity ×1e3 per PD² if  metrics_by_rings returns px units
         for r in rings.values():
             if "tortuosity_mean" in r and PD_px:
                 T_PD2 = float(r["tortuosity_mean"]) * (PD_px ** 2)
