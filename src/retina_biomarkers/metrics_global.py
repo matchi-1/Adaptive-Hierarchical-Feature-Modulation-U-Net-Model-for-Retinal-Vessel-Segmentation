@@ -1,3 +1,4 @@
+# metrics_global.py
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -92,18 +93,18 @@ def _tortuosity_edge(pixels: List[Tuple[int, int]]) -> float:
 
 
 def tortuosity_stats(graph: Dict) -> Dict[str, float]:
-    """
-    Tortuosity = length-weighted mean of per-edge (∫κ^2 ds)/L.
-    """
     vals = []
     lens = []
     for e in graph["edges"]:
-        # include endpoints in length computation for better geometry
-        p = [(graph["nodes"][e["u"]]["y"], graph["nodes"][e["u"]]["x"])] + e["pixels"] + [(graph["nodes"][e["v"]]["y"], graph["nodes"][e["v"]]["x"])]
+        p = [(graph["nodes"][e["u"]]["y"], graph["nodes"][e["u"]]["x"])] + e["pixels"] + \
+            [(graph["nodes"][e["v"]]["y"], graph["nodes"][e["v"]]["x"])]
         t = _tortuosity_edge(p)
-        L = len(p)
-        vals.append(t)
-        lens.append(L)
+        # true arclength:
+        pts = np.array([(x, y) for (y, x) in p], dtype=np.float32)
+        seglen = np.linalg.norm(np.diff(pts, axis=0), axis=1) if len(pts) >= 2 else np.array([0.0], dtype=np.float32)
+        L = float(seglen.sum())
+        if L > 1e-6:
+            vals.append(t); lens.append(L)
     if not vals:
         return {"tortuosity_mean": 0.0}
     vals = np.asarray(vals, dtype=np.float32)
