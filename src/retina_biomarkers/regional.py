@@ -99,18 +99,20 @@ def _tortuosity_edge(pixels):
     integral = float((kappa**2 * ds).sum())
     return integral / float(seglen.sum())
 
+
 def _tortuosity_mean_in_roi(graph, roi):
     vals, lens = [], []
     for e in graph["edges"]:
         path = _edge_full_path(graph, e)
-        t = _tortuosity_edge(path)                          # tortuosity on full edge geometry
-        L_in = _edge_length_in_roi_sampled(graph, e, roi)   # length *inside* ROI (sampled)
+        t = _tortuosity_edge(path)                      # tortuosity on full path
+        L_in = _edge_length_in_roi_sampled(graph, e, roi, samples=9)  # ← sampled length *inside* ROI
         if L_in > 0:
             vals.append(t); lens.append(L_in)
     if not vals:
         return 0.0
     vals = np.asarray(vals, np.float32); lens = np.asarray(lens, np.float32)
     return float((vals * lens).sum() / max(lens.sum(), 1e-6))
+
 
 def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, *, edt_interior=True):
     """
@@ -140,7 +142,8 @@ def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, *, edt_interior
 
     return np.asarray(sel, dtype=np.float32) if sel else np.zeros(0, dtype=np.float32)
 
-def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=True, *, skel=None):
+def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px,
+                     use_orth=True, *, skel=None, edt_interior=True):
     H, W = mask.shape
     if skel is None:
         from .geometry import skeletonize_mask
@@ -155,10 +158,11 @@ def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=
                         "median_width": 0.0, "iqr_width": 0.0, "tortuosity_mean": 0.0}
             continue
         ad = area_density(mask, roi=roi)
-        total_len_in = _total_edge_length_in_roi(graph, roi)   # see D) below
+        total_len_in = _total_edge_length_in_roi(graph, roi, samples=9)   # ← sampled version
         ld = total_len_in / area
+
         fd = fractal_dimension_boxcount(skel & roi)            # <--- skeleton!
-        ws = _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, edt_interior=True)
+        ws = _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, edt_interior=edt_interior)
         if ws.size:
             med = float(np.median(ws)); iqr = float(np.subtract(*np.percentile(ws, [75, 25])))
         else:
