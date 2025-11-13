@@ -446,3 +446,166 @@ def preprocess_image_hsi(
         lum_eq = exposure.adjust_gamma(lum_eq, gamma=gamma)
 
     return np.expand_dims(lum_eq.astype(np.float32), 0)
+
+
+
+
+import numpy as np
+
+def _build_poly4_design_matrix(h, w):
+    yy, xx = np.indices((h, w))
+
+    # normalize coords to [-1, 1] for stability
+    x = (xx - w / 2) / (w / 2)
+    y = (yy - h / 2) / (h / 2)
+
+    x = x.ravel()
+    y = y.ravel()
+
+    S = np.stack([
+        np.ones_like(x),
+        x,
+        y,
+        x**2,
+        x*y,
+        y**2,
+        x**3,
+        x**2 * y,
+        x * y**2,
+        y**3,
+        x**4,
+        x**3 * y,
+        x**2 * y**2,
+        x * y**3,
+        y**4
+    ], axis=1).astype(np.float64)
+
+    return S  # (N, 15)
+
+
+def _tukey_weights(r, c=4.685, eps=1e-12):
+    u = r / (c + eps)
+    w = np.zeros_like(u)
+    mask = np.abs(u) < 1
+    w[mask] = (1 - u[mask]**2)**2
+    return w
+
+
+def irhsf_correct_uint8(img_u8, num_iters=5, eps=1e-6):
+    """
+    IRHSF-style illumination correction on a single-channel uint8 fundus image.
+    Returns:
+        corrected_u8, illum_u8  (both uint8, same shape as input)
+    """
+    if img_u8.ndim != 2:
+        raise ValueError("irhsf_correct_uint8 expects a 2D single-channel image")
+
+    h, w = img_u8.shape
+    S = _build_poly4_design_matrix(h, w)
+    N = h * w
+
+    # log intensity in [0,1] → log
+    img = img_u8.astype(np.float64) / 255.0
+    IL = np.log(img + eps).ravel()
+
+    base_mask = np.ones(N, dtype=bool)
+    wts = base_mask.astype(np.float64)
+
+    for _ in range(num_iters):
+        W = wts[:, None]        # (N,1)
+        Sw = S * W              # weighted design
+        A = Sw.T @ S            # (15,15)
+        b = Sw.T @ IL           # (15,)
+
+        P = np.linalg.lstsq(A, b, rcond=None)[0]
+
+        fit = S @ P
+        r = IL - fit
+
+        r_in = r[base_mask]
+        mad = np.median(np.abs(r_in - np.median(r_in))) + eps
+        sigma = 1.4826 * mad
+
+        r_norm = r / (sigma + eps)
+        w_new = _tukey_weights(r_norm)
+        w_new[~base_mask] = 0.0
+
+        if np.allclose(w_new, wts):
+            break
+        wts = w_new
+
+    illum_log = (S @ P).reshape(h, w)
+    illum = np.exp(illum_log)
+
+    corrected = np.exp(np.log(img + eps) - illum_log)
+    corrected -= corrected.min()
+    corrected /= (corrected.max() + eps)
+
+    corrected_u8 = (corrected * 255).clip(0, 255).astype(np.uint8)
+    illum_u8 = (illum / illum.max() * 255).clip(0, 255).astype(np.uint8)
+    return corrected_u8, illum_u8
+
+
+
+import cv2
+import numpy as np
+from skimage import exposure
+
+def preprocess_image_irhsf(
+    path: str,
+    target_size: int = 512,
+    use_irhsf: bool = True,
+    irhsf_iters: int = 5,
+    use_gamma: bool = True, gamma: float = 0.9,
+    use_clahe: bool = True,
+    clahe_clip: float = 2.0, clahe_tiles: int = 8,
+):
+    """
+    Memory-safe fundus preprocessing that works well for vessels.
+
+    Sequence:
+      1) Read as BGR uint8.
+      2) Extract GREEN channel as uint8.
+      3) Isotropic resize + pad to target_size (still uint8).
+      4) Optional IRHSF illumination correction on the green channel.
+      5) Optional CLAHE on uint8.
+      6) Convert to float32 in [0,1].
+      7) Optional gentle gamma to lift faint vessels.
+      8) Return (1,H,W) float32.
+
+    Notes:
+      - FOV masking is still handled later in the Dataset.
+    """
+
+    # 1) Read image as BGR uint8
+    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(f"Could not load image at {path}")
+
+    # 2) Use GREEN channel
+    g_u8 = bgr[..., 1]  # (H,W) uint8
+
+    # 3) Isotropic resize + pad (still uint8)
+    g_u8 = _iso_resize_and_pad(g_u8, target=target_size, pad_value=0)
+
+    # 4) Optional IRHSF illumination correction
+    if use_irhsf:
+        g_u8, _illum_u8 = irhsf_correct_uint8(g_u8, num_iters=irhsf_iters)
+
+    # 5) Optional CLAHE in uint8 space
+    if use_clahe:
+        clahe = cv2.createCLAHE(
+            clipLimit=clahe_clip,
+            tileGridSize=(clahe_tiles, clahe_tiles),
+        )
+        g_u8 = clahe.apply(g_u8)
+
+    # 6) Convert to float32 [0,1]
+    g = g_u8.astype(np.float32) / 255.0
+
+    # 7) Optional gentle gamma
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        g = exposure.adjust_gamma(g, gamma=gamma)
+
+    # 8) Add channel dimension → (1,H,W)
+    return np.expand_dims(g.astype(np.float32), axis=0)
