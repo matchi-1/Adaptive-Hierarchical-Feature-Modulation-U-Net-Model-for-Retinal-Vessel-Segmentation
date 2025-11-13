@@ -141,46 +141,39 @@ def collect_orthogonal_chords(
         if len(xy_u) < 4:
             continue
 
-        # ---- raw finite-diff tangent, then SMOOTH its angle (window clamped) ----
         L = len(xy_u)
 
-        # make an odd window <= L
-        win_eff = max(3, int(tan_win_px))
-        if win_eff % 2 == 0:
-            win_eff += 1
-        if win_eff > L:
-            win_eff = L if L % 2 == 1 else L - 1
+        # moving-average angle smoothing (fallback path)
+        win_eff = max(3, int(tan_win_px) | 1)  # odd
+        win_eff = min(win_eff, L if L % 2 == 1 else L - 1)
 
-        dxy = np.gradient(xy_u, axis=0)                       # (L,2)
-        theta_raw = np.arctan2(dxy[:, 1], dxy[:, 0])          # (L,)
-        theta_sm  = _smooth_angles(theta_raw, win=win_eff)    # (L,)
+        dxy = np.gradient(xy_u, axis=0)                 # (L,2)
+        theta_raw = np.arctan2(dxy[:, 1], dxy[:, 0])    # (L,)
+        theta_sm  = _smooth_angles(theta_raw, win=win_eff)
 
-        # ---- curvature as d(theta)/ds with uniform arc-length param ----
-        s_param = np.arange(L, dtype=np.float64) * float(stride_by_arc)  # (L,)
-        dtheta_ds = np.gradient(theta_sm, s_param, edge_order=1)         # (L,)
-        kappa = np.abs(dtheta_ds)                                        # (L,)
+        # curvature from angle vs. arc-length (stable)
+        s_param   = np.arange(L, dtype=np.float64) * float(stride_by_arc)
+        dtheta_ds = np.gradient(theta_sm, s_param, edge_order=1)
+        kappa     = np.abs(dtheta_ds)
 
-        for i in range(len(xy_u)):
+        for i in range(L):
             s = S[i]
             if s < margin_from_nodes or (total - s) < margin_from_nodes:
                 continue
-            if max(kappa[i], 0.0) > kappa_max:
+            if kappa[i] > kappa_max:
                 continue
 
-            # stable tangent: smoothed angle OR local PCA
-            if use_pca:
-                v = _local_pca_tangent(xy_u, i, radius_px=pca_radius_px)
-                if v is None:
-                    tx, ty = np.cos(theta_sm[i]), np.sin(theta_sm[i])
-                else:
-                    tx, ty = float(v[0]), float(v[1])
-            else:
+            # robust tangent: PCA first; fallback to smoothed finite-diff
+            t = _local_pca_tangent(xy_u, i, radius_px=pca_radius_px) if use_pca else None
+            if t is None:
                 tx, ty = np.cos(theta_sm[i]), np.sin(theta_sm[i])
+            else:
+                tx, ty = t
 
             # normal (y,x)
             ny, nx = -ty, tx
             nrm = np.hypot(ny, nx)
-            if nrm < 1e-6: 
+            if nrm < 1e-6:
                 continue
             ny, nx = ny/nrm, nx/nrm
 
@@ -201,6 +194,17 @@ def collect_orthogonal_chords(
             ratio = max(rL, rR) / max(min(rL, rR), 1e-6)
             if ratio > asym_max_ratio:
                 continue
+
+            # ---------- NEW: enforce perpendicularity ----------
+            # chord direction vs normal must be within tol degrees
+            vx, vy = (xR - xL), (yR - yL)
+            nv = np.hypot(vx, vy) + 1e-8
+            vx, vy = vx / nv, vy / nv
+            # angle error between chord and ideal normal
+            cos_err = abs(vx*nx + vy*ny)         # 1 = parallel to normal
+            if cos_err < np.cos(np.deg2rad(6.0)):  # tol = 6°
+                continue
+            # -----------------------------------------------
 
             chords.append(((yL, xL), (yR, xR), (yc, xc)))
 
