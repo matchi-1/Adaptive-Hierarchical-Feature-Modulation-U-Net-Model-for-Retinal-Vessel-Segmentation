@@ -71,7 +71,7 @@ def visualize_widths_centerline_boundary(
     *,
     pixel_exact=True,           # <<< NEW: draw as 1-pixel raster overlays
     overlay_alpha=1.0,
-    chord_lw=1.5,               # used only when pixel_exact=False
+    chord_lw=1.0,               # used only when pixel_exact=False
     center_lw=1.0,              # used only when pixel_exact=False
     boundary_lw=1.0,            # used only when pixel_exact=False
     ring_color="cyan",
