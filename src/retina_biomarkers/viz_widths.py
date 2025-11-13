@@ -60,7 +60,7 @@ def _local_pca_tangent(skel_pts_xy, i, radius_px=5):
         if np.dot(v, fd) < 0: v = -v
     return v
 
-def collect_orthogonal_chords_v4(
+def collect_orthogonal_chords(
     mask, graph, dist, *,
     stride_by_arc=2.0,
     margin_from_nodes=10.0,
@@ -127,15 +127,28 @@ def collect_orthogonal_chords_v4(
         if total < 1e-6: 
             continue
 
-        # raw finite-diff tangent, then SMOOTH its angle
-        dxy = np.gradient(xy_u, axis=0)
-        theta_raw = np.arctan2(dxy[:,1], dxy[:,0])
-        theta_sm = _smooth_angles(theta_raw, win=tan_win_px)
+        # ---- guard for very short edges ----
+        if len(xy_u) < 4:
+            continue
 
-        # curvature for gating (from smoothed theta)
-        dth = np.gradient(theta_sm)
-        ds  = np.gradient(S)
-        kappa = np.abs(dth) / np.maximum(ds, 1e-6)
+        # ---- raw finite-diff tangent, then SMOOTH its angle (window clamped) ----
+        L = len(xy_u)
+
+        # make an odd window <= L
+        win_eff = max(3, int(tan_win_px))
+        if win_eff % 2 == 0:
+            win_eff += 1
+        if win_eff > L:
+            win_eff = L if L % 2 == 1 else L - 1
+
+        dxy = np.gradient(xy_u, axis=0)                       # (L,2)
+        theta_raw = np.arctan2(dxy[:, 1], dxy[:, 0])          # (L,)
+        theta_sm  = _smooth_angles(theta_raw, win=win_eff)    # (L,)
+
+        # ---- curvature as d(theta)/ds with uniform arc-length param ----
+        s_param = np.arange(L, dtype=np.float64) * float(stride_by_arc)  # (L,)
+        dtheta_ds = np.gradient(theta_sm, s_param, edge_order=1)         # (L,)
+        kappa = np.abs(dtheta_ds)                                        # (L,)
 
         for i in range(len(xy_u)):
             s = S[i]
