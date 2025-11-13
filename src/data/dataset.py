@@ -14,6 +14,7 @@ from src.data.preprocessing import (
     preprocess_mask,
     preprocess_image_hsi,
     derive_fov_mask_path_from_image,
+    preprocess_image_irhsf
 )
 
 """
@@ -153,6 +154,10 @@ class FundusSegDataset(Dataset):
             x = preprocess_image_mdfi_weighted(img_path, weights_rgb=self.weights_rgb, **self._pre_kw)
         elif self.use_color_space == "HSI":
             x = preprocess_image_hsi(img_path, **self._pre_kw)
+        elif self.use_color_space == "IRHSF":
+            x = preprocess_image_irhsf(img_path, **self._pre_kw)
+        elif self.use_color_space == "IRHSF_noCLAHE":
+            x = preprocess_image_irhsf(img_path, **self._pre_kw, use_clahe=False)
         else:
             raise ValueError(f"Unknown color_space: {self.use_color_space}")
         return x[0]  # removes the dummy channel dimension → final shape (H, W)
