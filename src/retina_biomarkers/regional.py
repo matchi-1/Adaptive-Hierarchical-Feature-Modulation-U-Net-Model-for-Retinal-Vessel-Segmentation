@@ -42,6 +42,35 @@ def _edge_length_in_roi(graph, e, roi):
             L += float(d)
     return L
 
+# regional.py
+def _edge_length_in_roi_fraction(p0, p1, roi, samples=7):
+    # fraction of the segment [p0->p1] that lies inside roi
+    (y0, x0), (y1, x1) = p0, p1
+    ts = np.linspace(0.0, 1.0, samples, dtype=np.float32)
+    ys = (1 - ts) * y0 + ts * y1
+    xs = (1 - ts) * x0 + ts * x1
+    inside = 0
+    H, W = roi.shape
+    for y, x in zip(ys, xs):
+        iy, ix = int(round(y)), int(round(x))
+        if 0 <= iy < H and 0 <= ix < W and roi[iy, ix]:
+            inside += 1
+    return inside / samples
+
+def _total_edge_length_in_roi(graph, roi, samples=7):
+    total = 0.0
+    for e in graph["edges"]:
+        path = _edge_full_path(graph, e)
+        if len(path) < 2: 
+            continue
+        pts = np.asarray([(p[1], p[0]) for p in path], dtype=np.float32)  # (x,y)
+        for i in range(len(path) - 1):
+            seg_len = float(np.linalg.norm(pts[i+1] - pts[i]))
+            frac = _edge_length_in_roi_fraction(path[i], path[i+1], roi, samples=samples)
+            total += seg_len * frac
+    return total
+
+
 def _tortuosity_edge(pixels):
     if len(pixels) < 3: return 0.0
     import numpy as np
@@ -101,32 +130,32 @@ def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, *, edt_interior
 
     return np.asarray(sel, dtype=np.float32) if sel else np.zeros(0, dtype=np.float32)
 
-def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=True):
+def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=True, *, skel=None):
     H, W = mask.shape
-    rings = ring_masks_from_disc((H,W), disc_center, PD_px, step_PD=0.5, max_PD=3.0)
-    out={}
+    if skel is None:
+        from .geometry import skeletonize_mask
+        skel = skeletonize_mask(mask)
+    rings = ring_masks_from_disc((H, W), disc_center, PD_px, step_PD=0.5, max_PD=3.0)
+    out = {}
     for (r0, r1, roi) in rings:
         key = f"{r0:.1f}-{r1:.1f}PD"
         area = _roi_area(roi)
         if area == 0:
-            out[key] = {"area_density":0.0,"length_density":0.0,"fractal_dimension":0.0,"median_width":0.0,"iqr_width":0.0,"tortuosity_mean":0.0}
+            out[key] = {"area_density": 0.0, "length_density": 0.0, "fractal_dimension": 0.0,
+                        "median_width": 0.0, "iqr_width": 0.0, "tortuosity_mean": 0.0}
             continue
-        # area density (within ROI)
         ad = area_density(mask, roi=roi)
-        # length density (within ROI area)
-        total_len_in = sum(_edge_length_in_roi(graph, e, roi) for e in graph["edges"])
+        total_len_in = _total_edge_length_in_roi(graph, roi)   # see D) below
         ld = total_len_in / area
-        # fractal dim (on skeleton ∧ ROI)
-        fd = fractal_dimension_boxcount(to_bool_mask(mask) & roi)
-        # calibre inside ROI (choose widths_orth or widths_edt to pass)
-        ws = _width_samples_in_roi(widths_per_edge, graph, roi, stride=1)
+        fd = fractal_dimension_boxcount(skel & roi)            # <--- skeleton!
+        ws = _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, edt_interior=True)
         if ws.size:
-            med = float(np.median(ws)); iqr = float(np.subtract(*np.percentile(ws, [75,25])))
+            med = float(np.median(ws)); iqr = float(np.subtract(*np.percentile(ws, [75, 25])))
         else:
             med = 0.0; iqr = 0.0
-        # tortuosity inside ROI
         tt = _tortuosity_mean_in_roi(graph, roi)
-        out[key] = {"area_density":ad, "length_density":ld, "fractal_dimension":fd, "median_width":med, "iqr_width":iqr, "tortuosity_mean":tt}
+        out[key] = {"area_density": ad, "length_density": ld, "fractal_dimension": fd,
+                    "median_width": med, "iqr_width": iqr, "tortuosity_mean": tt}
     return out
 
 def quadrant_masks(shape, center):
