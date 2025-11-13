@@ -1,3 +1,4 @@
+# regional.py
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Callable
@@ -72,22 +73,32 @@ def _tortuosity_mean_in_roi(graph, roi):
     vals = np.asarray(vals, np.float32); lens=np.asarray(lens, np.float32)
     return float((vals*lens).sum()/np.maximum(lens.sum(),1e-6))
 
-def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1):
-    sel=[]
-    for w,e in zip(widths_per_edge, graph["edges"]):
-        path = _edge_full_path(graph,e)
-        if len(path)==0 or w.size==0: continue
-        keep=[]
-        for idx,(y,x) in enumerate(path):
-            if idx%stride==0 and roi[y,x]:
-                # If widths_per_edge came from EDT per *interior* pixels only,
-                # consider matching indices; otherwise we've computed along full path.
-                # In our orth function we sampled along full path with stride, so ok.
-                if idx < len(w):
-                    keep.append(w[idx])
-        if keep:
-            sel.extend(keep)
-    import numpy as np
+def _width_samples_in_roi(widths_per_edge, graph, roi, stride=1, *, edt_interior=True):
+    """
+    Collect width samples that fall in roi.
+    If edt_interior=True, widths_per_edge[i] corresponds to e["pixels"] (interior only).
+    If edt_interior=False, widths_per_edge[i] corresponds to the full path ([u] + pixels + [v]) with same stride.
+    """
+    sel = []
+    for w, e in zip(widths_per_edge, graph["edges"]):
+        path = _edge_full_path(graph, e)  # [u] + pixels + [v]
+        if len(path) == 0 or w.size == 0:
+            continue
+
+        if edt_interior:
+            # widths index 0 ↔ path index 1, ..., widths index n-1 ↔ path index n
+            for k in range(0, len(e["pixels"]), max(1, stride)):
+                path_idx = k + 1
+                y, x = path[path_idx]
+                if roi[y, x]:
+                    sel.append(w[k])
+        else:
+            # widths aligned to full path indices directly
+            for idx in range(0, min(len(path), len(w)), max(1, stride)):
+                y, x = path[idx]
+                if roi[y, x]:
+                    sel.append(w[idx])
+
     return np.asarray(sel, dtype=np.float32) if sel else np.zeros(0, dtype=np.float32)
 
 def metrics_by_rings(mask, graph, widths_per_edge, disc_center, PD_px, use_orth=True):
