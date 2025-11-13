@@ -167,3 +167,14 @@ def quadrant_masks(shape, center):
         "left":   (xx <  cx),
         "right":  (xx >= cx),
     }
+
+
+def widths_from_chords(chords, roi=None):
+    out = []
+    for (yL, xL), (yR, xR), (yc, xc) in chords:
+        if roi is not None:
+            iy, ix = int(round(yc)), int(round(xc))
+            if not (0 <= iy < roi.shape[0] and 0 <= ix < roi.shape[1] and roi[iy, ix]):
+                continue
+        out.append(float(np.hypot(yR - yL, xR - xL)))
+    return np.asarray(out, dtype=np.float32) if out else np.zeros(0, dtype=np.float32)
