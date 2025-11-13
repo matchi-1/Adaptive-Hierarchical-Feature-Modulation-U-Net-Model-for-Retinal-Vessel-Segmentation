@@ -4,6 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from skimage.measure import find_contours
 
+from skimage.segmentation import find_boundaries
+from skimage.draw import line as draw_line
+
+
 from src.retina_biomarkers import (
     skeletonize_mask, build_skeleton_graph, distance_transform,
     collect_orthogonal_chords
@@ -65,19 +69,17 @@ def compute_graph_and_chords(
 def visualize_widths_centerline_boundary(
     out: dict,
     *,
-    chord_lw=1.5,
-    center_lw=1.0,
-    boundary_lw=1.0,
+    pixel_exact=True,           # <<< NEW: draw as 1-pixel raster overlays
+    overlay_alpha=1.0,
+    chord_lw=1.5,               # used only when pixel_exact=False
+    center_lw=1.0,              # used only when pixel_exact=False
+    boundary_lw=1.0,            # used only when pixel_exact=False
     ring_color="cyan",
-    zoom=None,                 # e.g. (cy, cx, r)
+    ring_style="vector",        # "vector" or "pixel"
+    zoom=None,                  # e.g. (cy, cx, r)
     figsize=(7.5, 7.5),
-    # any chord-creation knobs can be passed through:
-    **chord_kwargs
+    **chord_kwargs              # forwarded to compute_graph_and_chords
 ):
-    """
-    One-shot figure: OD + PD rings + vessel boundary (blue) + centerline (white) + width chords (red).
-    Returns {'graph': ..., 'chords': ...} so you can reuse them.
-    """
     rgb_iso   = out["rgb_iso"]
     mask      = out["pred_mask"]
     disc_mask = out["disc_mask"]
@@ -86,35 +88,85 @@ def visualize_widths_centerline_boundary(
 
     graph, chords = compute_graph_and_chords(mask, **chord_kwargs)
 
+    H, W = mask.shape
     fig, ax = plt.subplots(1, 1, figsize=figsize)
-    ax.imshow(rgb_iso); ax.axis("off")
+
+    # Always keep the base image crisp to the pixel grid
+    ax.imshow(rgb_iso, interpolation="nearest")
+    ax.set_aspect("equal")
+    ax.axis("off")
     ax.set_title("OD + PD rings + centerline (white) + boundary (blue) + widths (red)")
 
-    # (a) boundary (blue, 1 px)
-    for c in find_contours(mask.astype(float), level=0.5):
-        yy, xx = c[:, 0], c[:, 1]
-        ax.plot(xx, yy, color="blue", lw=boundary_lw, solid_capstyle="butt", antialiased=False)
+    if pixel_exact:
+        # Build a single RGBA overlay in image pixel space
+        overlay = np.zeros((H, W, 4), dtype=np.uint8)
 
-    # (b) centerline (white, 1 px) from graph
-    for e in graph["edges"]:
-        u = graph["nodes"][e["u"]]; v = graph["nodes"][e["v"]]
-        path = [(u["y"], u["x"])] + e["pixels"] + [(v["y"], v["x"])]
-        yy = np.array([p[0] for p in path]); xx = np.array([p[1] for p in path])
-        ax.plot(xx, yy, color="white", lw=center_lw, solid_capstyle="butt", antialiased=False)
+        # (1) boundary as 1-pixel blue
+        bmask = find_boundaries(mask.astype(bool), mode="outer")
+        overlay[bmask] = [0, 0, 255, 255]
 
-    # (c) width chords (red, 1.5 px)
-    for (yL, xL), (yR, xR), (yc, xc) in chords:
-        ax.plot([xL, xR], [yL, yR], color="red", lw=chord_lw, alpha=0.95,
-                solid_capstyle="butt", antialiased=False)
+        # (2) centerline as 1-pixel white
+        for e in graph["edges"]:
+            u = graph["nodes"][e["u"]]; v = graph["nodes"][e["v"]]
+            path = [(u["y"], u["x"])] + e["pixels"] + [(v["y"], v["x"])]
+            for (yy, xx) in path:
+                iy, ix = int(yy), int(xx)
+                if 0 <= iy < H and 0 <= ix < W:
+                    overlay[iy, ix] = [255, 255, 255, 255]  # white
+        # (3) chords as 1-pixel red (draw last so they appear on top)
+        for (yL, xL), (yR, xR), _ in chords:
+            rr, cc = draw_line(int(round(yL)), int(round(xL)), int(round(yR)), int(round(xR)))
+            good = (rr >= 0) & (rr < H) & (cc >= 0) & (cc < W)
+            overlay[rr[good], cc[good]] = [255, 0, 0, 255]
 
-    # (d) OD contour + PD rings
-    try:
-        ax.contour(disc_mask.astype(bool), levels=[0.5], colors='yellow', linewidths=1.2)
-    except Exception:
-        pass
-    _draw_pd_rings(ax, center_yx, PD_px, color=ring_color)
+        # (4) disc contour (yellow) as 1-pixel boundary
+        try:
+            dmask = find_boundaries(disc_mask.astype(bool), mode="outer")
+            # draw disc after boundary/centerline? up to you; here we draw over them
+            overlay[dmask] = [255, 255, 0, 255]
+        except Exception:
+            pass
 
-    # optional zoom window
+        ax.imshow(overlay, interpolation="nearest", alpha=overlay_alpha)
+
+        # PD rings: vector by default; or raster circles if you want 1-px too
+        if ring_style == "vector":
+            _draw_pd_rings(ax, center_yx, PD_px, color=ring_color)
+        else:
+            # simple pixel rings: radii rounded to nearest pixel
+            cy, cx = center_yx
+            theta = np.linspace(0, 2*np.pi, 1024)
+            for k in np.arange(0.5, 3.0 + 1e-9, 0.5):
+                r = int(round(k * PD_px))
+                xx = (cx + r*np.cos(theta)).round().astype(int)
+                yy = (cy + r*np.sin(theta)).round().astype(int)
+                inb = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W)
+                ring_overlay = np.zeros((H, W, 4), dtype=np.uint8)
+                ring_overlay[yy[inb], xx[inb]] = [0, 255, 255, 255]  # cyan
+                ax.imshow(ring_overlay, interpolation="nearest", alpha=1.0)
+    else:
+        # Original vector drawing (will not be exact pixel width)
+        from skimage.measure import find_contours
+        for c in find_contours(mask.astype(float), level=0.5):
+            yy, xx = c[:, 0], c[:, 1]
+            ax.plot(xx, yy, color="blue", lw=boundary_lw, solid_capstyle="butt", antialiased=False)
+
+        for e in graph["edges"]:
+            u = graph["nodes"][e["u"]]; v = graph["nodes"][e["v"]]
+            path = [(u["y"], u["x"])] + e["pixels"] + [(v["y"], v["x"])]
+            yy = np.array([p[0] for p in path]); xx = np.array([p[1] for p in path])
+            ax.plot(xx, yy, color="white", lw=center_lw, solid_capstyle="butt", antialiased=False)
+
+        for (yL, xL), (yR, xR), _ in chords:
+            ax.plot([xL, xR], [yL, yR], color="red", lw=chord_lw, alpha=0.95,
+                    solid_capstyle="butt", antialiased=False)
+
+        try:
+            ax.contour(disc_mask.astype(bool), levels=[0.5], colors='yellow', linewidths=1.2)
+        except Exception:
+            pass
+        _draw_pd_rings(ax, center_yx, PD_px, color=ring_color)
+
     if zoom is not None:
         cy, cx, r = zoom
         ax.set_xlim(cx - r, cx + r)
