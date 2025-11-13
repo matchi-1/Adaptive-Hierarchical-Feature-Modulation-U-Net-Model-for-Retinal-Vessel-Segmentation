@@ -1,3 +1,4 @@
+# metrics_topology.py
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -177,8 +178,8 @@ def gap_metrics(mask: np.ndarray, graph: Dict, max_gap_px: int = 10, align_cos_t
     """
     Identify candidate 'gaps' as pairs of endpoints within max_gap_px whose straight-line
     connection passes through background only and whose local directions are roughly aligned.
-    align_cos_thresh: cosine of angle between endpoint directions must be <= -align_cos_thresh
-                      (i.e., pointing towards each other). Use 0.5 ~ 60 degrees tolerance.
+    align_cos_thresh: require cos(v1, to2) >= align_cos_thresh and cos(v2, to1) >= align_cos_thresh
+                      (i.e., both endpoints are pointing toward each other).
     """
     mask_bin = to_bool_mask(mask)
     H, W = mask_bin.shape
