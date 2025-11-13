@@ -42,23 +42,33 @@ def _smooth_angles(theta, win=9):
     th_s = np.convolve(th, kern, mode="same")
     return th_s
 
-def _local_pca_tangent(skel_pts_xy, i, radius_px=5):
-    """optional: robust tangent from PCA in a local disk."""
+def _local_pca_tangent(skel_pts_xy: np.ndarray, i: int, radius_px: int = 6):
+    """
+    PCA direction of points within a disk of radius_px around index i.
+    Returns a unit vector (tx, ty) aligned with forward progress.
+    """
     xy = skel_pts_xy
     xc, yc = xy[i]
-    d = np.hypot(xy[:,0]-xc, xy[:,1]-yc)
-    idx = np.where(d <= radius_px)[0]
-    if idx.size < 3:            # fallback to finite diff
-        return None
-    P = xy[idx] - P_mean if (P := xy[idx]).size and (P_mean := P.mean(axis=0)) is not None else xy[idx]
-    C = (P.T @ P) / max(len(idx)-1, 1)
-    vals, vecs = np.linalg.eigh(C)
-    v = vecs[:, np.argmax(vals)]  # principal direction (x,y)
-    # ensure consistent sign with forward finite-diff
-    if i+1 < len(xy):
+    d = np.hypot(xy[:, 0] - xc, xy[:, 1] - yc)
+    idx = np.where(d <= float(radius_px))[0]
+    if idx.size < 3:
+        return None  # fallback to finite-diff outside
+
+    P = xy[idx]
+    C = (P - P.mean(axis=0, keepdims=True))
+    # covariance (no 1/(n-1) needed for direction)
+    U, S, Vt = np.linalg.svd(C, full_matrices=False)
+    v = Vt[0]  # principal direction in (x,y)
+
+    # keep sign consistent with forward finite-difference
+    if i + 1 < len(xy):
         fd = xy[i+1] - xy[i]
-        if np.dot(v, fd) < 0: v = -v
-    return v
+        if np.dot(v, fd) < 0:
+            v = -v
+
+    v = v / (np.linalg.norm(v) + 1e-8)
+    return float(v[0]), float(v[1])
+
 
 def collect_orthogonal_chords(
     mask, graph, dist, *,
