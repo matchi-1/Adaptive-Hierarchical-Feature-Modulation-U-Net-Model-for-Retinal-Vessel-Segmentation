@@ -152,7 +152,7 @@ class WNet(nn.Module):
 
         self.final = nn.Conv2d(layers[0], n_classes, kernel_size=1)
         ############################
-        self.first_2 = ConvBlock(in_c=in_c+1, out_c=layers[0], k_sz=k_sz,
+        self.first_2 = ConvBlock(in_c=in_c+2, out_c=layers[0], k_sz=k_sz,
                                  shortcut=shortcut, pool=False)
         self.down_path_2 = nn.ModuleList()
         for i in range(len(layers) - 1):
