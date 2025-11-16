@@ -62,7 +62,7 @@ def _to_numpy_u8_2d(x) -> np.ndarray:
 # ------------------------------
 
 @torch.no_grad()
-def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, compute_auc=True):
+def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, compute_auc=True, apply_sigmoid=True):
     """
     Evaluate a segmentation model on a DataLoader and print macro/micro metrics.
 
@@ -126,11 +126,12 @@ def evaluate_and_print(model, test_dataloader, device="cuda", threshold=0.5, com
             probs = torch.softmax(logits, dim=1)[:, 1]    # [B,H,W]
         
         elif logits.ndim == 4 and logits.shape[1] == 1:
-            probs = torch.sigmoid(logits[:, 0])           # [B,H,W]
+                if apply_sigmoid: probs = torch.sigmoid(logits[:, 0])
+                else: probs = logits[:,0]           # [B,H,W]
         
         elif logits.ndim == 3:               # [B,H,W]
-            probs = torch.sigmoid(logits)                 # [B,H,W]
-        
+            if apply_sigmoid: probs = torch.sigmoid(logits)                 # [B,H,W]
+            else: probs = logits
         else:
             raise ValueError(f"Unexpected logits shape: {tuple(logits.shape)}")
 

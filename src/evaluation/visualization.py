@@ -95,7 +95,7 @@ def _to_hw_numpy_01(t: torch.Tensor) -> np.ndarray:
 
 
 @torch.no_grad()
-def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
+def _predict_single(model, img_1hw, apply_sigmoid, device="cpu", threshold=0.5):
     """
     Run model prediction on a single 1xHxW image.
 
@@ -132,11 +132,13 @@ def _predict_single(model, img_1hw, device="cpu", threshold=0.5):
         if logits.shape[1] == 2:   # Two-class output
             prob = torch.softmax(logits, dim=1)[:, 1, ...][0]
         elif logits.shape[1] == 1: # Single channel logits
-            prob = torch.sigmoid(logits[:, 0, ...])[0]
+            if apply_sigmoid: prob = torch.sigmoid(logits[:, 0, ...])[0]
+            else: prob = logits[:,0,...][0]
         else:                      # Multi-class
             prob = torch.softmax(logits, dim=1).max(dim=1).values[0]
     elif logits.ndim == 3:         # [C,H,W]
-        prob = torch.sigmoid(logits[0])
+        if apply_sigmoid:prob = torch.sigmoid(logits[0])
+        else: prob = logits[0]
     else:
         raise ValueError(f"Unexpected model output shape: {tuple(logits.shape)}")
 
@@ -155,7 +157,8 @@ def visualize_samples(
     clamp_pred_with_fov=True,
     figsize_per_row=(12, 3),
     is_save = False,
-    save_dir = None
+    save_dir = None,
+    apply_sigmoid=True
 ):
     """
     Show a grid of model predictions compared to original and ground truth.
@@ -218,7 +221,7 @@ def visualize_samples(
             gt2 = _read_mask_gray_01(gt2_path) if (gt2_path and os.path.exists(gt2_path)) else np.zeros_like(gt1)
 
             # 5. Predicted
-            prob, pred = _predict_single(model, img_1hw, device=device, threshold=threshold)
+            prob, pred = _predict_single(model, img_1hw, device=device, threshold=threshold, apply_sigmoid=apply_sigmoid)
             if clamp_pred_with_fov and fov_1hw is not None:
                 fov_np = _to_hw_numpy_01(fov_1hw)
                 pred = pred * fov_np
