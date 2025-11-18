@@ -1,9 +1,12 @@
+from tkinter import Image
 import numpy as np
 import cv2
 from typing import Optional, Tuple
 from skimage.measure import label, regionprops
 from skimage.morphology import remove_small_objects, binary_closing, binary_opening, disk
 from scipy.ndimage import binary_fill_holes
+from src.data.preprocessing import _iso_resize_and_pad
+from PIL import Image
 
 def extract_disc_mask_safe(
     pred_map: np.ndarray,
@@ -51,6 +54,25 @@ def extract_disc_mask_safe(
     disc = binary_fill_holes(disc)
     disc = remove_small_objects(disc, min_size=200)
     return disc.astype(np.uint8)
+
+
+def preprocess_image_retina_from_pil(
+    pil_im: Image.Image,
+    target_size: int = 512,
+    use_gamma: bool = True,
+    gamma: float = 0.9,
+    clahe_clip: float = 2.0,
+    clahe_tiles: int = 8,
+) -> np.ndarray:
+    g_u8 = np.array(pil_im.convert("RGB"), dtype=np.uint8)[..., 1]  # (H,W) uint8
+    g_u8 = _iso_resize_and_pad(g_u8, target=target_size, pad_value=0)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_tiles, clahe_tiles))
+    g_eq_u8 = clahe.apply(g_u8)
+    g = g_eq_u8.astype(np.float32) / 255.0
+    if use_gamma and 0.5 <= gamma <= 1.2:
+        g = np.power(g, gamma, dtype=np.float32)
+    return np.expand_dims(g, axis=0).astype(np.float32)  # (1,H,W)
+
 
 def center_and_pd_with_bounds(
     disc_bin,
