@@ -3,7 +3,7 @@ from PIL import Image
 
 from src.retina_biomarkers.notebook_utils.pipeline.config import PipelineConfig
 from src.data.preprocessing import _iso_resize_and_pad
-from src.retina_biomarkers import preprocess_image_retina_from_pil
+from apps.streamlit.lib.preprocess import preprocess_image_retina_from_pil
 from src.retina_biomarkers.notebook_utils.models.mathfi_loader import load_dpcn_from_ckpt, infer_seg_maps
 
 # OD segmentation 
