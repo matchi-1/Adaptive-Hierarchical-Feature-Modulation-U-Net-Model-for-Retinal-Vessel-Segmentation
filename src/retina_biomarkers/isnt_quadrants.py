@@ -12,10 +12,7 @@ from src.retina_biomarkers.od_seg import (
     center_and_pd_with_bounds
 )
 
-try:
-    from src.retina_biomarkers.metrics import compute_biomarkers_from_mask_array 
-except Exception:
-    compute_biomarkers_from_mask_array = None
+from src.retina_biomarkers.notebook_utils.pipeline.retina import compute_biomarkers_from_mask_array
 
 
 # =========================
