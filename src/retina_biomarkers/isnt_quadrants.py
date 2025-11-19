@@ -156,32 +156,68 @@ def isnt_quadrants_masks(shape_hw, disc_yx, *, fovea_yx, sector_deg=90.0, fov=No
 # =========================
 # Per-quadrant biomarker computation
 # =========================
+# --- in src/retina_biomarkers/isnt_quadrants.py ---
+
 def compute_biomarkers_per_quadrant(
     pred_mask_u8, disc_center_yx, PD_px, quadrant_masks,
-    *, compute_fn=None, **compute_kwargs
+    *, base_fov_mask=None, compute_fn=None, **compute_kwargs
 ):
     """
-    Compute your biomarker dict per quadrant by masking the vessel map.
-    - pred_mask_u8: (H,W) uint8/bool vessel mask
-    - quadrant_masks: dict {'T','I','N','S'} -> bool mask
-    - compute_fn: callable(img_mask_u8, disc_center=..., PD_px=..., **kwargs)
-                  defaults to `compute_biomarkers_from_mask_array` if available
-    Returns: dict like {'T': biom_dict, 'I': biom_dict, ...}
+    Returns: dict {'T': biom_dict, 'I': biom_dict, 'N': biom_dict, 'S': biom_dict}
+    biom_dict has the SAME structure as your standard compute_biomarkers_from_mask_array(),
+    so it already includes 'global' with 'fractal_dimension', 'area_density', 'tortuosity_mean',
+    and vc_orth.* for caliber.
     """
+    import numpy as np
     fn = compute_fn or compute_biomarkers_from_mask_array
     if fn is None:
-        raise RuntimeError("No biomarker computation function available. Pass compute_fn=...")
+        raise RuntimeError("Pass compute_fn or ensure compute_biomarkers_from_mask_array is importable")
+
+    base = pred_mask_u8.astype(bool)
+    if base_fov_mask is not None:
+        base &= base_fov_mask.astype(bool)
+
+    # make sure we don't forward unexpected args
+    compute_kwargs.pop("base_fov_mask", None)
 
     out = {}
-    for k, m in quadrant_masks.items():
-        submask = (pred_mask_u8.astype(bool) & m).astype(np.uint8)
-        out[k] = fn(
+    for k, quad_m in quadrant_masks.items():
+        submask = (base & quad_m.astype(bool)).astype(np.uint8)
+
+        # If wedge is effectively empty, return safe NaNs so downstream plots don't crash
+        if np.count_nonzero(submask) < 10:    # threshold can be looser/tighter
+            out[k] = {
+                "image_shape": pred_mask_u8.shape,
+                "global": {
+                    "area_density": np.nan,
+                    "fractal_dimension": np.nan,
+                    "tortuosity_mean": np.nan,
+                    "vc_orth": {"median_width": np.nan, "iqr_width": np.nan},
+                },
+                "topology": {},
+                "rings": None,
+            }
+            continue
+
+        res = fn(
             submask,
             disc_center=disc_center_yx,
             PD_px=PD_px,
             **compute_kwargs
         )
+
+        # Optional: normalize area_density by quadrant-support area (FOV∩quadrant),
+        # not whole image. Comment this block out if you prefer image-normalized.
+        try:
+            denom = float(np.count_nonzero(quad_m if base_fov_mask is None else (quad_m & base_fov_mask)))
+            if denom > 0:
+                res["global"]["area_density"] = float(np.count_nonzero(submask)) / denom
+        except Exception:
+            pass
+
+        out[k] = res
     return out
+
 
 
 # =========================
