@@ -20,7 +20,8 @@ def load_mathfi_model(device: str = "auto", dataset: Optional[str] = None):
     model = DPCNConcatUNet(
         in_ch=1, enh_channels=64, iters=6,
         threshold_mode="scaled_vat", half_life=2.0, reduce_to=64,
-        base_kwargs={"cbam_reduction": 16},
+        base_kwargs={"cbam_reduction": 16,},
+        refine_edge=True,
     ).to(dev).eval()
 
     state = torch.load(ckpt, map_location=dev)
