@@ -95,7 +95,7 @@ class MSU(nn.Module):
         Notes
             - `F_A` and `F_B` must have identical shape, dtype, and device.
             - Convolution weights are shared across the two inputs at each scale.
-            - Use `base + out` externally if you want to overlay the difference map onto
+            - Use `base + out` externally if want to overlay the difference map onto
             an existing feature tensor.
         """
 

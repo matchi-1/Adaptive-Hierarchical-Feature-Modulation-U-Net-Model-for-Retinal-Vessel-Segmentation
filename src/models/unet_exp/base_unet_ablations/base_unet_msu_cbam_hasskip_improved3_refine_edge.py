@@ -96,7 +96,7 @@ class AlignMSU(nn.Module):
         return self.msu(A_, B_)  # (B, C, H, W)
 
 
-# ----------------- HAS-Skip (your effective version) -----------------
+# ----------------- HAS-Skip ( effective version) -----------------
 class HASSkip(nn.Module):
     """
     For each decoder level l, produce FSKIP_l:
@@ -280,7 +280,7 @@ class AdaptiveSelectiveFusionGate(nn.Module):
 # ----------------- Full model -----------------
 class UNetWithMSU_HASSkip_CBAM_ASFG(nn.Module):
     """
-    Same MSU graph + HAS-Skip as your improved variant, but replaces
+    Same MSU graph + HAS-Skip as improved variant, but replaces
     FB_l = FMSU_l + FSKIP_l   with
     FB_l = ASFG_l( FMSU_l, FSKIP_l )
     where ASFG learns per-image, per-level mixing of {MSU, HAS, CBAM(HAS)}

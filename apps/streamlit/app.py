@@ -60,6 +60,18 @@ from apps.streamlit.lib.metrics_ui import (
 # used only to make overlay base the exact model geometry
 from src.data.preprocessing import _iso_resize_and_pad
 
+# NEW: biomarker helpers
+from apps.streamlit.lib.biomarkers_runtime import (
+    compute_biomarkers_from_segmentation,
+    make_skeleton_pd_overlay_figure,
+    flatten_metrics_v5,
+    extract_global_table,
+    extract_ring_table,
+)
+
+import pandas as pd
+
+
 # --------------------- File Upload Helpers --------------------
 # --- Utility: make unique names like "img.png", "img (1).png", "img (2).png" ---
 def make_unique_name(name: str, already: set[str]) -> str:
@@ -605,7 +617,12 @@ if 'btn_run_viewer' in locals() and btn_run_viewer and has_selected_file and (no
 
             # ---- 1) MATHFI inference ----
             stage_runner(stage, "Predicting (MATHFI)…"); time.sleep(0.02)
-            mdl_mathfi, dev, _ = load_mathfi_model(dataset=ds)
+            mdl_mathfi, dev, mdl_info = load_mathfi_model(dataset=ds)
+            mathfi_ckpt_path = mdl_info.get("ckpt_path")
+
+            # optional: stash it in session state for later reuse
+            st.session_state["mathfi_ckpt_path"] = mathfi_ckpt_path
+
             x = torch.from_numpy(img_fov_1hw).unsqueeze(0).to(dev)
             fov = torch.from_numpy(fov_1hw).unsqueeze(0).to(dev)
 
@@ -728,6 +745,12 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
         thr = st.session_state.get("threshold", 0.5)
         prob_m = res["mathfi"]["probs"] if "mathfi" in res else res["probs"]
         pred_m = (prob_m >= thr).astype(np.uint8)
+        # After you've got prob_m and thr
+        pred_m = (prob_m >= thr).astype(np.uint8)
+
+        mask_store = st.session_state.setdefault("mathfi_binary_masks", {})
+        mask_store[sel_stem] = pred_m
+
         with col_pred1:
             st.image((pred_m * 255).astype(np.uint8), caption="Predicted (MATHFI)", use_container_width=True)
         with col_cmp1:
@@ -798,4 +821,137 @@ if st.session_state.get("submode") == "With Ground Truth" and sel_stem and has_r
     else:
         st.info("Upload a Ground Truth mask in the Selection panel to see the comparison and metrics.")
 
+
+
+# ---------------- Biomarkers (single image) ----------------
+st.markdown("### Biomarkers (Global + Per-PD Rings)")
+
+if sel_stem and has_result_m:
+    bio_store = st.session_state.setdefault("biomarker_results", {})
+    bio_entry = bio_store.get(sel_stem)
+
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        run_bio = st.button(
+            "Compute biomarkers for selected image",
+            key=f"btn_biomarkers_{sel_stem}",
+            use_container_width=True,
+        )
+    with col_btn2:
+        reset_bio = st.button(
+            "Clear cached biomarkers",
+            key=f"btn_clear_biomarkers_{sel_stem}",
+            use_container_width=True,
+        )
+
+    if reset_bio:
+        bio_store.pop(sel_stem, None)
+        st.rerun()
+
+    if run_bio:
+        res_m = st.session_state.get("results", {}).get(sel_stem)
+        if not res_m:
+            st.warning("Run MATHFI inference on this image first.")
+        else:
+            # pull rgb + mask from the inference payload
+            rgb_iso = res_m.get("rgb_iso")
+            if rgb_iso is None:
+                # fallback: rebuild from viewer image if necessary
+                img_file = next((f for f in img_files if stem_of(f.name) == sel_stem), None)
+                rgb_iso = np.array(Image.open(img_file).convert("RGB"), dtype=np.uint8)
+
+            # Grab the binary mask we stored when we drew the prediction
+            mask_store = st.session_state.get("mathfi_binary_masks", {})
+            pred_mask = mask_store.get(sel_stem)
+
+            if pred_mask is None:
+                st.error("No binary vessel mask found for this image. "
+                        "Please run the MATHFI prediction first.")
+            else:
+                # if you already run an OD model in the app, pass its label map here
+                od_pred_map = res_m.get("od_pred_map")      # optional
+                od_id2label = res_m.get("od_id2label")      # optional
+
+                with st.spinner("Computing biomarkers from current segmentation…"):
+                    try:
+                        out_bio = compute_biomarkers_from_segmentation(
+                            rgb_iso=rgb_iso,
+                            pred_mask=pred_mask.astype(np.uint8),
+                            od_pred_map=od_pred_map,
+                            od_id2label=od_id2label,
+                        )
+                        df_bio = pd.DataFrame(
+                            [flatten_metrics_v5(out_bio, um_per_px=None)]
+                        )
+                        bio_entry = {"out": out_bio, "df": df_bio}
+                        bio_store[sel_stem] = bio_entry
+                    except Exception as e:
+                        st.error(f"Biomarker computation failed: {e}")
+                        bio_entry = None
+
+    if bio_entry:
+        out_bio = bio_entry["out"]
+        df_bio = bio_entry["df"]
+
+        st.markdown("### Biomarkers (per-image)")
+
+        # --- side-by-side layout: image | tables ---
+        col_img, col_tbl = st.columns([1.1, 1.6])
+
+        with col_img:
+            st.markdown("#### Geometry + skeleton + PD rings")
+            fig_overlay = make_skeleton_pd_overlay_figure(
+                out_bio,
+                title=f"Skeleton graph + PD rings — {sel_stem}",
+            )
+            st.pyplot(fig_overlay, use_container_width=True)
+
+        with col_tbl:
+            st.markdown("#### Quantitative biomarkers")
+
+            df_global = extract_global_table(df_bio)
+            df_rings = extract_ring_table(df_bio)
+
+            # ---------- GLOBAL table ----------
+            numeric_global = df_global.select_dtypes(include=["number"]).columns
+            fmt_global = {col: "{:.3f}" for col in numeric_global}
+
+            global_styler = (
+                df_global
+                .style
+                .format(fmt_global)
+                .set_table_styles([
+                    {"selector": "th", "props": [("font-size", "30px"), ("font-weight", "600")]},
+                    {"selector": "td", "props": [("font-size", "30px")]},
+                ])
+            )
+
+            st.markdown("**Global biomarkers**")
+            # use st.table so font-size actually applies and no fake rows
+            st.table(global_styler)
+
+            # ---------- RINGS table ----------
+            if df_rings.empty:
+                st.info("No per-PD ring metrics available for this image.")
+            else:
+                numeric_rings = df_rings.select_dtypes(include=["number"]).columns
+                fmt_rings = {col: "{:.3f}" for col in numeric_rings}
+
+                rings_styler = (
+                    df_rings
+                    .style
+                    .format(fmt_rings)
+                    .set_table_styles([
+                        {"selector": "th", "props": [("font-size", "16px"), ("font-weight", "600")]},
+                        {"selector": "td", "props": [("font-size", "16px")]},
+                    ])
+                )
+
+                st.markdown("**Per-PD ring biomarkers**")
+                st.table(rings_styler)
+
+
+
+else:
+    st.info("Run MATHFI inference on a selected image to enable biomarkers.")
 
