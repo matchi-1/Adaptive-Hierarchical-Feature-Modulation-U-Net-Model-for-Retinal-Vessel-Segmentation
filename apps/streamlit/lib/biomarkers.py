@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # --- project root (same pattern as app.py) ---
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# ⚠️ UPDATE THIS: set to the same checkpoint you used in your biomarker notebook
+# UPDATE THIS: set to the same checkpoint you used in your biomarker notebook
 # e.g. "../../outputs/checkpoints/final/[DRIVE] dpcn_refineEdge.pth"
 DEFAULT_BIOMARKER_CKPT = "../../outputs/checkpoints/final/[DRIVE] dpcn_refineEdge.pth"
 

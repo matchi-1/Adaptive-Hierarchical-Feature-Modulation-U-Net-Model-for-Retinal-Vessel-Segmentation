@@ -17,6 +17,46 @@ from src.retina_biomarkers.od_seg.postproc import extract_disc_mask_safe
 from src.retina_biomarkers.notebook_utils.report.compare import draw_overlay_ax
 from src.data.preprocessing import _iso_resize_and_pad
 
+import cv2  # needed for resizing label maps if ever
+from src.data.preprocessing import _iso_resize_and_pad
+
+from src.retina_biomarkers.od_seg.refuge import (
+    load_refuge_segformer,
+    infer_label_map,
+)
+from src.retina_biomarkers.od_seg.postproc import (
+    extract_disc_mask_safe,
+    center_and_pd_with_bounds,
+)
+
+from src.retina_biomarkers.notebook_utils.pipeline.retina import (
+    compute_biomarkers_from_mask_array,
+)
+from src.retina_biomarkers.notebook_utils.report.compare import draw_overlay_ax
+
+
+# ------------- OD model cache ------------- #
+_OD_CACHE: Dict[str, Any] = {"processor": None, "model": None, "device": None}
+
+def _get_od_model(device: Optional[str] = None):
+    """
+    Lazy-load and cache the REFUGE SegFormer optic disc/cup model.
+    """
+    if _OD_CACHE["model"] is None:
+        processor, model, dev = load_refuge_segformer(device=device)
+        _OD_CACHE["processor"] = processor
+        _OD_CACHE["model"] = model
+        _OD_CACHE["device"] = dev
+    else:
+        # if caller forces a different device, reload on that device
+        if device is not None and device != _OD_CACHE["device"]:
+            processor, model, dev = load_refuge_segformer(device=device)
+            _OD_CACHE["processor"] = processor
+            _OD_CACHE["model"] = model
+            _OD_CACHE["device"] = dev
+
+    return _OD_CACHE["processor"], _OD_CACHE["model"], _OD_CACHE["device"]
+
 
 # -------------------- Config for biometrics -------------------- #
 
@@ -49,90 +89,107 @@ def compute_biomarkers_from_segmentation(
     """
     Take the current MATHFI segmentation (binary mask) + an RGB base image
     and compute:
-      - OD center + PD (if OD map given; otherwise geometric fallback)
-      - global + per-ring + per-quadrant biomarkers (via compute_biomarkers_from_mask_array)
+      - Optic disc center + PD (via REFUGE SegFormer + postproc)
+      - Global + per-ring biometrics via compute_biomarkers_from_mask_array
 
-    IMPORTANT: This function makes sure that rgb_iso is resized/padded to
-    exactly match pred_mask.shape, so draw_overlay_ax can safely do overlays.
+    IMPORTANT:
+      * rgb_iso is assumed to be an iso-resized, padded view (e.g., 512×512)
+      * pred_mask is in the *same* geometry as the MATHFI output
+      * This function ensures rgb_iso and mask share the same H×W
+      * If od_pred_map / od_id2label are not provided, it runs the OD model internally.
     """
-    # ---- 0) Normalize mask to 0/1 uint8 ----
+    # ---------- 0) Normalize mask to 0/1 uint8 ----------
     mask = (np.asarray(pred_mask) > 0).astype(np.uint8)
     Hm, Wm = mask.shape[:2]
 
-    # ---- 1) Force base RGB to same geometry as mask ----
+    # ---------- 1) Ensure base RGB matches mask geometry ----------
     base_rgb = np.asarray(rgb_iso)
-    if base_rgb.ndim == 2:  # grayscale → 3-channel
+    if base_rgb.ndim == 2:  # grayscale -> 3 channels
         base_rgb = np.repeat(base_rgb[..., None], 3, axis=2)
 
     Hr, Wr = base_rgb.shape[:2]
     if (Hr, Wr) != (Hm, Wm):
-        # Use the same iso-resize + pad strategy as the main pipeline
+        # Use same iso-resize + pad strategy so fundus aligns with mask
         base_rgb = _iso_resize_and_pad(
             base_rgb,
-            target=Hm,     # mask is square from the model (e.g. 512×512)
+            target=Hm,      # mask is usually 512×512 square
             pad_value=0,
         ).astype(np.uint8)
 
-    # ---- 2) OD mask + PD estimation (if OD prediction exists) ----
-    disc_mask = None
-    center_yx = None
-    PD_raw = None
-    PD_px = None
-
+    # ---------- 2) Run / use OD segmentation to get disc mask ----------
     if od_pred_map is not None and od_id2label is not None:
-        # OD SegFormer output case
-        disc_mask = extract_disc_mask_safe(
-            pred_map=np.asarray(od_pred_map),
-            id2label=od_id2label,
-            img_shape=mask.shape,
+        # Caller provided OD map; ensure shape matches mask
+        od_map = np.asarray(od_pred_map)
+        if od_map.shape != mask.shape:
+            od_map = cv2.resize(
+                od_map.astype(np.uint8),
+                (Wm, Hm),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        id2label = od_id2label
+    else:
+        # No OD map provided -> run REFUGE SegFormer on the iso fundus
+        processor, od_model, od_device = _get_od_model()
+        od_map = infer_label_map(
+            base_rgb,
+            processor=processor,
+            model=od_model,
+            device=od_device,
         )
+        id2label = od_model.config.id2label
+
+    # Extract disc mask from OD label map
+    disc_mask = extract_disc_mask_safe(
+        pred_map=od_map,
+        id2label=id2label,
+        img_shape=mask.shape,
+        cup_dilate_frac=0.10,
+    )
+
+    # Compute disc center + PD in *mask* geometry
+    if disc_mask.sum() == 0:
+        # if OD really fails, fall back so app still runs (but you'll see it's wrong)
         center_yx, PD_raw, PD_px = center_and_pd_with_bounds(
-            disc_mask,
+            disc_bin=np.zeros_like(mask),
             img_shape=mask.shape,
             allow_fallback=True,
             fallback_center_yx=(Hm / 2.0, Wm / 2.0),
             fallback_PD_px=0.20 * min(Hm, Wm),
         )
     else:
-        # No OD model wired in → geometric fallback (center = image center; PD ≈ 0.2 × min dim)
         center_yx, PD_raw, PD_px = center_and_pd_with_bounds(
-            disc_bin=np.zeros_like(mask, dtype=np.uint8),
+            disc_mask,
             img_shape=mask.shape,
-            allow_fallback=True,
-            fallback_center_yx=(Hm / 2.0, Wm / 2.0),
-            fallback_PD_px=0.20 * min(Hm, Wm),
+            allow_fallback=False,  # should succeed if disc_mask is non-empty
         )
-        disc_mask = np.zeros_like(mask, dtype=np.uint8)
 
-    # ---- 3) Core biomarker computation (skeleton, rings, topology, etc.) ----
+    # ---------- 3) Core biomarker computation (skeleton, rings, topology) ----------
     biom = compute_biomarkers_from_mask_array(
         mask,
         disc_center=center_yx,
-        PD_px=float(PD_px) if PD_px is not None else None,
+        PD_px=float(PD_px),
         max_gap_px=max_gap_px,
         angle_k_ahead=angle_k_ahead,
         ortho_step=ortho_step,
         ortho_max_radius=ortho_max_radius,
     )
 
-    # ---- 4) Package result dict in the same structure as your notebook pipeline ----
+    # ---------- 4) Package result in notebook-compatible "out" dict ----------
     out = {
         "od": {
-            "center_yx": (
-                float(center_yx[0]),
-                float(center_yx[1]),
-            ) if center_yx is not None else None,
-            "PD_px_raw": float(PD_raw) if PD_raw is not None else None,
-            "PD_px": float(PD_px) if PD_px is not None else None,
+            "center_yx": (float(center_yx[0]), float(center_yx[1])),
+            "PD_px_raw": float(PD_raw),
+            "PD_px": float(PD_px),
         },
         "biomarkers": biom,
-        "rgb_iso": base_rgb,  # <-- geometry now matches mask
-        "disc_mask": disc_mask.astype(np.uint8),
+        "rgb_iso": base_rgb,                      # geometry = mask geometry
+        "disc_mask": disc_mask.astype(np.uint8),  # OD contour
         "pred_mask": mask.astype(np.uint8),
         "pred_mask_thr05": mask.astype(np.uint8),
     }
 
     return out
+
 
 
 

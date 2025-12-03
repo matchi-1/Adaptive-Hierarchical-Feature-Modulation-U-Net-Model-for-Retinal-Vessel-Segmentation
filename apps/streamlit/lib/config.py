@@ -2,9 +2,9 @@ from pathlib import Path
 
 # Model checkpoints
 DATASET_CHECKPOINTS = {
-    "DRIVE":     Path("outputs/checkpoints/[DRIVE] MATHFI.pth"),
-    "CHASE-DB1": Path("outputs/checkpoints/[CHASEDB1] MATHFI.pth"),
-    "STARE":     Path("outputs/checkpoints/[STARE] MATHFI.pth"),
+    "DRIVE":     Path("outputs/checkpoints/final/[DRIVE] MATHFI.pth"),
+    "CHASE-DB1": Path("outputs/checkpoints/final/[CHASEDB1] MATHFI.pth"),
+    "STARE":     Path("outputs/checkpoints/final/[STARE] MATHFI.pth"),
     "ALL":       Path("outputs/checkpoints/[ALL] MATHFI.pth"),
 }
 
