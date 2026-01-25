@@ -18,3 +18,4 @@ notebooks/runs
 notebooks\runs
 
 notebooks/**/runs/**.json
+outputs/aptos_cache
