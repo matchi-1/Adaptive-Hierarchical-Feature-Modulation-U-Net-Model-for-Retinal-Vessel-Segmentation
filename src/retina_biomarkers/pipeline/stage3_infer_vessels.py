@@ -25,6 +25,38 @@ from src.retina_biomarkers.notebook_utils.models.mathfi_loader import load_dpcn_
 # ----------------------------
 # helpers
 # ----------------------------
+
+def _to_numpy(x):
+    import numpy as np
+    import torch
+    if x is None:
+        return None
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    if isinstance(x, np.ndarray):
+        return x
+    # numpy scalar or other array-like
+    return np.asarray(x)
+
+def _to_hw_map(arr):
+    """
+    Normalize model outputs to a (H,W) numpy array.
+    Accepts:
+      (1,1,H,W), (1,H,W), (H,W)
+    """
+    import numpy as np
+    a = _to_numpy(arr)
+    if a is None:
+        return None
+    if a.ndim == 4:
+        return a[0, 0]
+    if a.ndim == 3:
+        return a[0]
+    if a.ndim == 2:
+        return a
+    raise ValueError(f"Unexpected prob shape: {a.shape}")
+
+
 def _cfg_to_dict(cfg: Any) -> Dict[str, Any]:
     if hasattr(cfg, "model_dump"):
         return cfg.model_dump()
@@ -88,19 +120,21 @@ class VesselContext:
             threshold=cfg.threshold,
         )
 
-        prob_map = probs[0, 0].detach().cpu().numpy().astype(np.float32)  # (H,W)
+        prob_map = _to_hw_map(probs).astype(np.float32)  # (H,W)
         out = {"prob_map": prob_map}
 
-        # optional: keep outputs for later analysis
-        if edge_probs is not None:
-            out["edge_prob"] = edge_probs[0, 0].detach().cpu().numpy().astype(np.float32)
-        if skel_probs is not None:
-            out["skel_prob"] = skel_probs[0, 0].detach().cpu().numpy().astype(np.float32)
+        # optional extras
+        ep = _to_hw_map(edge_probs)
+        if ep is not None:
+            out["edge_prob"] = ep.astype(np.float32)
 
-        # derived mask (optional convenience)
+        sp = _to_hw_map(skel_probs)
+        if sp is not None:
+            out["skel_prob"] = sp.astype(np.float32)
+
         out["pred_mask_u8"] = (prob_map >= float(cfg.threshold)).astype(np.uint8)
-
         return out
+
 
 
 # ----------------------------
