@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from src.data.preprocessing import _iso_resize_and_pad
 from src.retina_biomarkers.notebook_utils.pipeline.config import PipelineConfig
 
 # OD segmentation
@@ -64,6 +65,34 @@ def _center_from_binary_mask(mask_2d: np.ndarray) -> Optional[Tuple[float, float
     if len(ys) == 0:
         return None
     return (float(ys.mean()), float(xs.mean()))
+
+
+def find_fovea_yx_from_cyan_iso(fovea_img_path: str, image_size: int = 512, tol: int = 40):
+    """
+    Reads the RGB fovea image (fundus + cyan dot), applies the SAME iso resize+pad,
+    then finds the cyan dot coordinates in the iso coordinate system.
+    Returns (fy, fx) as floats.
+    """
+    f_rgb = np.array(Image.open(fovea_img_path).convert("RGB"), dtype=np.uint8)
+    f_iso = _iso_resize_and_pad(f_rgb, target=image_size, pad_value=0).astype(np.uint8)
+
+    R, G, B = f_iso[..., 0], f_iso[..., 1], f_iso[..., 2]
+
+    # strict cyan: low R, high G, high B
+    mask = (R <= tol) & (G >= 255 - tol) & (B >= 240 - tol)
+
+    if not mask.any():
+        # broader fallback
+        mask = (R < 80) & (G > 170) & (B > 170)
+
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return None  # dot not found
+
+    fy = float(ys.mean())
+    fx = float(xs.mean())
+    return (fy, fx)
+
 
 
 # ----------------------------
@@ -127,11 +156,16 @@ def stage2_geometry_one(
     rgb_iso = np.load(s1 / "rgb_iso.npy")  # (H,W,3) uint8
     H, W = rgb_iso.shape[:2]
 
+    # read fovea_path directly from Stage1 meta.json (it already stores it)
+    meta1 = json.loads((s1 / "meta.json").read_text())
+    fovea_path = meta1.get("fovea_path", None)
+
     fovea_center_yx = None
-    fovea_path = s1 / "fovea_1hw.npy"
-    if fovea_path.exists():
-        fovea_1hw = np.load(fovea_path)  # (1,H,W) uint8
-        fovea_center_yx = _center_from_binary_mask(fovea_1hw[0])
+    if fovea_path:
+        fovea_center_yx = find_fovea_yx_from_cyan_iso(
+            fovea_path, image_size=cfg.image_size, tol=40
+        )
+
 
     # ---- OD segmentation + PD
     disc_mask, dbg = od_ctx.infer_disc(rgb_iso, cup_dilate_frac=cfg.cup_dilate_frac)
